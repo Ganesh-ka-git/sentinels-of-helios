@@ -1,0 +1,40 @@
+# Central configuration. Paths are relative to the project root unless absolute.
+
+jsoc:
+  email: "ganeshbehera36510@gmail.com"          # <-- replace with the e-mail registered at JSOC
+  series: "hmi.sharp_cea_720s"
+  segment: "Br"
+  query_chunk_days: 7               # split keyword queries into chunks to avoid timeouts
+
+paths:
+  data_dir: "data"
+  outputs_dir: "outputs"
+
+pilot:
+  start: "2024-05-01T00:00:00"      # pilot month (very active month, AR 13664): exercises M/X association
+  end:   "2024-06-01T00:00:00"      # exclusive
+  download_test:
+    enabled: true
+    n_hours: 4                      # export one HARP's Br frames for this many hours (~20 frames)
+
+flares:
+  source: "hek"                     # HEK via SunPy
+  frm_name: "SWPC"                  # keep a single catalogue source
+  association_window_hours: 1.0     # match NOAA number to HARP records within ±1 h of flare start
+
+samples:
+  grid_hours: 6                     # t on 00/06/12/18
+  forecast_start_hours: 6           # window [t+6h, t+24h)
+  forecast_end_hours: 24
+  persistence_hours: 24             # E0 looks back [t-24h, t)
+  frame_step_minutes: 24            # E2 / fine grid
+  n_frames_full: 31                 # 12 h @ 24 min (E2); coarse = every 2nd of these, fine = last 16
+  max_substitutions: 3
+  limb_max_deg: 68.0
+  quality_good_values: [0]          # PILOT: refine after inspecting the QUALITY distribution
+  require_noaa: true
+
+preprocess:
+  image_size: 128
+  clip_gauss: 1500.0
+  dtype: "float16"
