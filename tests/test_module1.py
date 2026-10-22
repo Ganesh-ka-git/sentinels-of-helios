@@ -9,7 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from flarecast.data.goes import class_to_label, clean_flares, normalise_noaa, parse_goes_class  # noqa: E402
-from flarecast.data.jsoc import parse_noaa_ars  # noqa: E402
+from flarecast.data.jsoc import parse_noaa_ars, parse_quality  # noqa: E402
 from flarecast.labels.association import (AMBIGUOUS, ASSOCIATED, NO_AR, NO_HARP,  # noqa: E402
                                           associate_flares)
 from flarecast.labels.samples import SampleConfig, build_samples, nominal_frame_times  # noqa: E402
@@ -61,6 +61,44 @@ def test_parse_noaa_ars():
     assert parse_noaa_ars("13664,13668") == {13664, 13668}
     assert parse_noaa_ars("3664") == {13664}
     assert parse_noaa_ars(np.nan) == frozenset()
+
+
+def test_parse_quality_hex_strings():
+    assert parse_quality("0x00000000") == 0
+    assert parse_quality("0x00000400") == 0x400
+    assert parse_quality(0) == 0 and parse_quality("0") == 0
+    assert parse_quality(np.nan) == -1 and parse_quality("garbage") == -1
+
+
+class _FakeClient:
+    """Mimics drms.Client.query(convert_numeric=False): every value comes back as a string, QUALITY in hex."""
+    def keys(self, series):
+        return ["HARPNUM", "T_REC", "NOAA_AR", "NOAA_NUM", "NOAA_ARS", "LON_FWT", "LAT_FWT", "QUALITY"]
+
+    def query(self, q, key, convert_numeric=True):
+        assert convert_numeric is False, "numeric conversion must be disabled (it destroys hex QUALITY)"
+        return pd.DataFrame({
+            "HARPNUM": ["11149", "11149"], "T_REC": ["2024.05.01_00:00:00_TAI", "2024.05.01_00:12:00_TAI"],
+            "NOAA_AR": ["13664", "13664"], "NOAA_NUM": ["1", "1"], "NOAA_ARS": ["13664", "13664,13668"],
+            "LON_FWT": ["-12.5", "-12.4"], "LAT_FWT": ["-18.1", "-18.1"], "QUALITY": ["0x00000000", "0x00000400"]})
+
+
+def test_query_sharp_keywords_parses_strings():
+    if "drms" not in sys.modules:
+        try:
+            import drms  # noqa: F401
+        except ImportError:  # minimal stand-in so the test runs without drms installed
+            import types
+            stub = types.ModuleType("drms")
+            stub.to_datetime = lambda s: pd.to_datetime(pd.Series(s).str.replace("_TAI", ""), format="%Y.%m.%d_%H:%M:%S")
+            sys.modules["drms"] = stub
+    from flarecast.data.jsoc import query_sharp_keywords
+    df = query_sharp_keywords(_FakeClient(), "hmi.sharp_cea_720s", pd.Timestamp("2024-05-01"),
+                              pd.Timestamp("2024-05-02"), chunk_days=7)
+    assert df["QUALITY"].tolist() == [0, 0x400]
+    assert df["HARPNUM"].dtype.kind == "i" and df["LON_FWT"].dtype.kind == "f"
+    assert df["noaa_set"].iloc[1] == {13664, 13668}
+    assert df["time"].iloc[0] == pd.Timestamp("2024-05-01 00:00")
 
 
 # ---------------- association ----------------
