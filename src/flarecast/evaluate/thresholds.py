@@ -2,7 +2,8 @@
 
 Stage 1: s = P(>=M) = p1 + p2; predicted >=M if s >= tau1.  Stage 2: among predicted >=M, predicted X if
 p2 / (p1 + p2) >= tau2, otherwise M.  Samples below tau1 are class 0. tau1 maximises validation TSS>=M (or HSS>=M for the
-sensitivity variant); tau2 then maximises validation one-vs-rest TSS_X of the final 3-class prediction at that tau1.
+sensitivity variant); tau2 then maximises validation one-vs-rest HSS_X (among all samples) of the final 3-class prediction at that tau1
+(Change Log 15: TSS_X gave a degenerate tau2 of ~0.01-0.11).
 Grid 0.01 ... 0.99, step 0.01; ties -> the HIGHER threshold. Nothing in this module reads a test file.
 """
 from __future__ import annotations
@@ -73,14 +74,14 @@ def tune_thresholds(y, p, objective: str = "tss") -> dict[str, float]:
         obj[i] = f(tp, fn, fp, tn)
     i1 = _argmax_last(obj)
     tau1 = float(GRID[i1])
-    tx = np.array([one_vs_rest_tss(confusion_matrix(y, two_stage_predict(p, tau1, t2)))[2] for t2 in GRID])
+    tx = np.array([hss_x(confusion_matrix(y, two_stage_predict(p, tau1, t2))) for t2 in GRID])
     i2 = _argmax_last(tx)
     return {"tau1": tau1, "tau2": float(GRID[i2]), f"val_{objective}_ge_m": float(obj[i1]),
-            "val_tss_X": float(tx[i2])}
+            "val_hss_X": float(tx[i2])}
 
 
 def threshold_curves(y, p) -> dict[str, np.ndarray]:
-    """Validation curves for the threshold figure: TSS>=M and HSS>=M vs tau1 (all grid values), and TSS_X vs tau2 at the
+    """Validation curves for the threshold figure: TSS>=M and HSS>=M vs tau1 (all grid values), and HSS_X vs tau2 at the
     TSS-optimal tau1."""
     y, p = np.asarray(y, dtype=int), _probs(p)
     s, ypos = score_ge_m(p), y >= 1
@@ -90,8 +91,16 @@ def threshold_curves(y, p) -> dict[str, np.ndarray]:
         cnt = (int((pr & ypos).sum()), int((~pr & ypos).sum()), int((pr & ~ypos).sum()), int((~pr & ~ypos).sum()))
         tss_c[i], hss_c[i] = tss(*cnt), hss(*cnt)
     tau1 = float(GRID[_argmax_last(tss_c)])
-    tx = np.array([one_vs_rest_tss(confusion_matrix(y, two_stage_predict(p, tau1, t2)))[2] for t2 in GRID])
-    return {"grid": GRID, "tss_ge_m": tss_c, "hss_ge_m": hss_c, "tss_X": tx, "tau1": tau1}
+    tx = np.array([hss_x(confusion_matrix(y, two_stage_predict(p, tau1, t2))) for t2 in GRID])
+    return {"grid": GRID, "tss_ge_m": tss_c, "hss_ge_m": hss_c, "hss_X": tx, "tau1": tau1}
+
+
+def hss_x(cm: np.ndarray) -> float:
+    """One-vs-rest HSS of class X (index 2) among all samples of a 3x3 confusion matrix; NaN if undefined."""
+    tp = cm[2, 2]
+    fn = cm[2].sum() - tp
+    fp = cm[:, 2].sum() - tp
+    return hss(tp, fn, fp, cm.sum() - tp - fn - fp)
 
 
 def macro_tss(cm: np.ndarray) -> float:
@@ -114,7 +123,7 @@ def tune_run(run_dir: str | Path) -> dict[str, float]:
     main = tune_thresholds(val["label"], val[PROB_COLS].to_numpy(), "tss")
     sens = tune_thresholds(val["label"], val[PROB_COLS].to_numpy(), "hss")
     return {"tau1": main["tau1"], "tau2": main["tau2"], "val_tss_ge_m_at_tau": main["val_tss_ge_m"],
-            "val_tss_X_at_tau": main["val_tss_X"], "tau1_hss": sens["tau1"], "tau2_hss": sens["tau2"],
+            "val_hss_X_at_tau": main["val_hss_X"], "tau1_hss": sens["tau1"], "tau2_hss": sens["tau2"],
             "val_hss_ge_m_at_tau_hss": sens["val_hss_ge_m"]}
 
 

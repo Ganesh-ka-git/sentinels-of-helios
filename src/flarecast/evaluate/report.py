@@ -437,7 +437,7 @@ def fig_roc_pr(selected: pd.DataFrame, aligned_test: dict[str, pd.DataFrame], ou
 
 
 def fig_threshold_curves(selected: pd.DataFrame, thr: pd.DataFrame, out_dir: Path) -> None:
-    """Validation TSS>=M and HSS>=M versus tau1, and TSS_X versus tau2 (at the TSS-optimal tau1); stars = chosen values."""
+    """Validation TSS>=M and HSS>=M versus tau1, and HSS_X versus tau2 (at the TSS-optimal tau1); stars = chosen values."""
     fig, axes = plt.subplots(1, 3, figsize=(12.6, 3.8))
     for r in selected.itertuples():
         d = load_preds(r.run_dir, "val")
@@ -445,12 +445,12 @@ def fig_threshold_curves(selected: pd.DataFrame, thr: pd.DataFrame, out_dir: Pat
         t = _thr_of(thr, r.model, r.lr, r.seed)
         ls = "--" if r.model in FOCAL else "-"
         col = COLORS[r.model]
-        for ax, key, tau in zip(axes, ("tss_ge_m", "hss_ge_m", "tss_X"), (t["tau1"], t["tau1_hss"], t["tau2"])):
+        for ax, key, tau in zip(axes, ("tss_ge_m", "hss_ge_m", "hss_X"), (t["tau1"], t["tau1_hss"], t["tau2"])):
             ax.plot(c["grid"], c[key], color=col, ls=ls, lw=1.5, label=r.model)
             i = int(np.argmin(np.abs(c["grid"] - tau)))
             ax.scatter([tau], [c[key][i]], color=col, marker="*", s=70, zorder=5)
     for ax, xl, yl in zip(axes, ("τ1 (on P(≥M))", "τ1 (on P(≥M))", "τ2 (on P(X | ≥M), at the TSS-optimal τ1)"),
-                          ("validation TSS≥M", "validation HSS≥M", "validation TSS_X")):
+                          ("validation TSS≥M", "validation HSS≥M", "validation HSS_X")):
         _style(ax, xl, yl)
         ax.xaxis.set_major_locator(matplotlib.ticker.AutoLocator())
     axes[0].legend(frameon=False, fontsize=7, ncol=2)

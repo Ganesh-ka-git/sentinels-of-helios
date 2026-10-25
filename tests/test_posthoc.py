@@ -52,7 +52,7 @@ def test_tau2_ties_go_higher_and_grid():
     y = np.array([0, 0, 1, 1, 2])
     p = np.array([[0.9, 0.1, 0.0], [0.8, 0.2, 0.0], [0.2, 0.8, 0.0], [0.1, 0.9, 0.0], [0.1, 0.9, 0.0]])
     r = tune_thresholds(y, p)
-    assert r["tau2"] == pytest.approx(0.99) and r["val_tss_X"] == pytest.approx(0.0)
+    assert r["tau2"] == pytest.approx(0.99) and r["val_hss_X"] == pytest.approx(0.0)
 
 
 def test_tau2_chosen_for_x_separation():
@@ -62,7 +62,26 @@ def test_tau2_chosen_for_x_separation():
                   [0.1, 0.8, 0.1], [0.1, 0.8, 0.1],
                   [0.1, 0.1, 0.8], [0.1, 0.1, 0.8]])
     r = tune_thresholds(y, p)
-    assert r["tau2"] == pytest.approx(0.88) and r["val_tss_X"] == pytest.approx(1.0)
+    assert r["tau2"] == pytest.approx(0.88) and r["val_hss_X"] == pytest.approx(1.0)
+
+
+def test_hss_x_rule_does_not_label_every_predicted_ge_m_as_x():
+    # 200 class-0, 40 M, 3 X. Stage 1 passes all M/X. M have p2/(p1+p2) spread over 0.05-0.45, X have 0.5/0.6/0.7.
+    # TSS_X is maximal at a very low tau2 (X recall 1, FPR 40/240) = labels every predicted >=M as X; HSS_X penalises
+    # those 40 false X and picks a high tau2 that isolates the X samples.
+    from flarecast.evaluate.metrics import one_vs_rest_tss
+    fr = np.r_[np.linspace(0.05, 0.45, 40), [0.5, 0.6, 0.7]]
+    p_ge = np.stack([np.full(43, 0.1), 0.9 * (1 - fr), 0.9 * fr], axis=1)
+    p = np.vstack([np.tile([0.97, 0.02, 0.01], (200, 1)), p_ge])
+    y = np.r_[np.zeros(200, int), np.ones(40, int), np.full(3, 2)]
+    r = tune_thresholds(y, p)
+    pred = two_stage_predict(p, r["tau1"], r["tau2"])
+    ge = pred >= 1
+    assert ge.sum() >= 43 and (pred[ge] == 2).sum() < ge.sum()          # not every predicted >=M sample is X
+    assert (pred == 2).sum() <= 5 and r["tau2"] > 0.45 and r["val_hss_X"] > 0.8
+    all_x = two_stage_predict(p, r["tau1"], 0.01)
+    assert (all_x[ge] == 2).all()                                       # tau2 = 0.01 would be the degenerate rule
+    assert one_vs_rest_tss(confusion_matrix(y, all_x))[2] > one_vs_rest_tss(confusion_matrix(y, pred))[2] - 0.2
 
 
 def test_hss_objective_is_optimal_for_hss():

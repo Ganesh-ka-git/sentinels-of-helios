@@ -178,7 +178,7 @@ def main() -> int:
           "`supported` = CI excludes 0 with a positive difference; `reverse` = CI excludes 0, negative; X metrics are "
           "`descriptive only` when the test set has fewer than 10 X samples.", "",
           "# B. Post-hoc (Change Log 15): thresholds tuned on validation only, AUC", "",
-          "τ1 on P(≥M)=p1+p2 maximises val TSS≥M; τ2 on p2/(p1+p2) maximises val TSS_X; grid 0.01–0.99, ties → higher. "
+          "τ1 on P(≥M)=p1+p2 maximises val TSS≥M; τ2 on p2/(p1+p2) maximises val HSS_X (one-vs-rest); grid 0.01–0.99, ties → higher. "
           "`tuned_hss` = τ1 maximising val HSS≥M (sensitivity). AUCs use P(≥M) and do not depend on thresholds; E0's "
           "AUC is that of its 0/1 call. `far` = FP/(TP+FP).", "",
           f"## Test, {seeds_txt}", R.md_table(R.eval_md_table(long if len(seeds) > 1 else long_seed, "test",
