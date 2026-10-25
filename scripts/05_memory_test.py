@@ -24,7 +24,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from flarecast.config import load_config  # noqa: E402
-from flarecast.models import build_model, count_params  # noqa: E402
+from flarecast.models import MODE_OF, build_model, count_params  # noqa: E402
 
 log = logging.getLogger("memory_test")
 MODELS = ["E1", "E2", "E3", "E4"]
@@ -32,9 +32,10 @@ MODELS = ["E1", "E2", "E3", "E4"]
 
 def make_inputs(name: str, batch: int, size: int, device: str) -> tuple[torch.Tensor, ...]:
     r = lambda *s: torch.randn(*s, device=device)  # noqa: E731
-    if name == "E1":
+    mode = MODE_OF[name]          # static (E1, E8) / single (E2, E7) / dual (E3-E6)
+    if mode == "static":
         return (r(batch, 1, size, size),)
-    if name == "E2":
+    if mode == "single":
         return (r(batch, 31, 1, size, size),)
     return (r(batch, 16, 1, size, size), r(batch, 16, 1, size, size))
 
@@ -89,14 +90,15 @@ def latency(name: str, size: int, device: str, warmup: int = 20, runs: int = 200
     try:
         model = build_model(name).to(device).eval()
         x = make_inputs(name, 1, size, device)
+        sync = torch.cuda.synchronize if device == "cuda" else (lambda: None)
         for _ in range(warmup):
             model(*x)
-        torch.cuda.synchronize()
+        sync()
         ts = []
         for _ in range(runs):
             tic = time.perf_counter()
             model(*x)
-            torch.cuda.synchronize()
+            sync()
             ts.append((time.perf_counter() - tic) * 1000)
         return {"model": name, "image_size": size, "latency_ms_median": round(statistics.median(ts), 2),
                 "latency_ms_p95": round(sorted(ts)[int(0.95 * len(ts)) - 1], 2), "runs": runs, "warmup": warmup}

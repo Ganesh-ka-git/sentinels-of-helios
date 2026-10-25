@@ -22,12 +22,10 @@ import torch.nn.functional as F
 from ..dataset import class_weights, filter_available, focal_alpha, load_samples, make_loaders
 from ..dataset.flare_dataset import SPLITS
 from ..evaluate.metrics import probs_to_pred, summarise
-from ..models import build_model, count_params
+from ..models import MODE_OF, build_model, count_params
 
 log = logging.getLogger(__name__)
 
-MODE_OF = {"E1": "static", "E2": "single", "E3": "dual", "E4": "dual", "E5": "dual",
-           "E6": "dual", "E7": "single", "E8": "static"}
 FOCAL_MODELS = ("E6", "E7", "E8")   # exploratory focal-loss models (Change Log 16)
 FOCAL_GAMMA = 2.0                   # Lin et al. 2017, fixed
 WEIGHT_DECAY = 1e-4

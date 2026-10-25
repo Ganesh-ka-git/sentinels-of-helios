@@ -162,6 +162,9 @@ def persistence_predict(persistence_label) -> torch.Tensor:
 _MODELS = {"E1": StaticCNN, "E2": SingleLSTM, "E3": DualLSTM, "E4": DualLSTMAttn, "E5": DualLSTMAttn,
            "E6": DualLSTMAttn, "E7": SingleLSTM, "E8": StaticCNN}
 
+# Input layout per model, derived from each class's ``input_mode`` (the single source for loaders, training and cost tests).
+MODE_OF = {name: cls.input_mode for name, cls in _MODELS.items()}
+
 
 def build_model(name: str) -> nn.Module:
     """Factory for the trainable models E1-E8 (E5 = E4, E6 = E4, E7 = E2, E8 = E1 architecture; only the loss differs).

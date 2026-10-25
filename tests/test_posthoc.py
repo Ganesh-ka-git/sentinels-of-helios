@@ -254,3 +254,22 @@ def test_queue_stage_jobs_order_and_resume(tmp_path):
     (tmp_path / "E1_lr0.0003_s1").mkdir()
     (tmp_path / "E1_lr0.0003_s1" / "DONE").write_text("x")
     assert len(q.stage2_jobs(chosen, [1, 2], tmp_path)[1]) == 15          # DONE runs are skipped
+
+
+def test_latency_and_mode_mapping_every_model_cpu():
+    """05_memory_test.latency() must build the right inputs for E1..E8 (E7 single, E8 static); MODE_OF is the one mapping."""
+    import importlib.util
+
+    from flarecast.models import MODE_OF as MODELS_MODE_OF, build_model
+
+    assert MODE_OF is MODELS_MODE_OF
+    assert {m: MODE_OF[m] for m in ("E1", "E8")} == {"E1": "static", "E8": "static"}
+    assert {m: MODE_OF[m] for m in ("E2", "E7")} == {"E2": "single", "E7": "single"}
+    assert all(MODE_OF[m] == "dual" for m in ("E3", "E4", "E5", "E6"))
+    spec = importlib.util.spec_from_file_location("memtest_lat", Path(__file__).resolve().parents[1] / "scripts" / "05_memory_test.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    for name in ("E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"):
+        assert build_model(name).input_mode == MODE_OF[name]
+        res = mod.latency(name, 16, "cpu", warmup=1, runs=2)
+        assert res["model"] == name and res["latency_ms_median"] >= 0
