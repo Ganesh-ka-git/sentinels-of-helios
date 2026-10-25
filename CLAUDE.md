@@ -118,7 +118,8 @@ Experiment priority if time is short: E1, E2, E3, then E4, E5, then Grad-CAM, th
   Single seed only: these verdicts are provisional until seeds 1 and 2 are run.
 - **Next**: (1) user runs `06b_queue_seeds.py` (seeds 1, 2 at the chosen lr; `--dry-run` first) then `07_evaluate.py --seeds 0 1 2`; check the
   multi-seed path on real output (never run yet); (2) Module 8: Grad-CAM for E1-E5 on the same test samples (about 2 TP, 2 FN, 2 FP, decisions.md §11,
-  Change Log 13; load `best.pt["model"]`), thesis figures/tables; (3) thesis text must state the TAI/UTC note (decisions.md §4), the
+  Change Log 13; load `best.pt["model"]`) plus one "X predicted as M" case selected from the ARGMAX predictions (not the tuned
+  thresholds; the case list must say so) and attention plots for E4, E5, E6, thesis figures/tables; (3) thesis text must state the TAI/UTC note (decisions.md §4), the
   catalogue-completeness rule, the batch-8 and cache deviations, and that X is descriptive only.
 
 ## Lessons learned / gotchas

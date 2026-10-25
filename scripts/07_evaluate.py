@@ -92,6 +92,8 @@ def main() -> int:
     ap.add_argument("--seeds", nargs="+", type=int, default=None,
                     help="e.g. 0 1 2: add multi-seed tables (mean ± sd) and pooled/sign-consistent bootstrap verdicts. "
                          "The lr per model is chosen on --seed by validation TSS>=M and reused for the other seeds")
+    ap.add_argument("--models", nargs="+", default=None,
+                    help="restrict the evaluation to these models, e.g. E1 E2 E3 E4 E5 (default: every model with DONE runs)")
     ap.add_argument("--config", default=None)
     a = ap.parse_args()
     if a.seeds is not None and a.seed not in a.seeds:
@@ -104,8 +106,10 @@ def main() -> int:
     res_dir.mkdir(parents=True, exist_ok=True)
 
     runs = R.discover_runs(out / "runs", a.tag, a.seed)
+    if a.models is not None:
+        runs = runs[runs["model"].isin(a.models)].reset_index(drop=True)
     if runs.empty:
-        raise SystemExit(f"No finished runs (DONE) with tag={a.tag!r} seed={a.seed} in {out / 'runs'}")
+        raise SystemExit(f"No finished runs (DONE) with tag={a.tag!r} seed={a.seed} models={a.models} in {out / 'runs'}")
     selected = R.select_best(runs)
     runs.assign(selected=runs["run_dir"].isin(selected["run_dir"])).drop(columns="run_dir").to_csv(
         res_dir / "selection.csv", index=False)
@@ -125,8 +129,10 @@ def main() -> int:
 
     # ---- seeds, thresholds (validation only), post-hoc tables
     sel_by_seed = R.select_seed_runs(out / "runs", a.tag, selected, seeds) if a.seeds is not None else {a.seed: selected}
-    all_runs = pd.concat([runs] + [R.discover_runs(out / "runs", a.tag, s) for s in seeds if s != a.seed],
-                         ignore_index=True)
+    other = [R.discover_runs(out / "runs", a.tag, s) for s in seeds if s != a.seed]
+    if a.models is not None:
+        other = [o[o["model"].isin(a.models)] for o in other]
+    all_runs = pd.concat([runs] + other, ignore_index=True)
     thr = R.run_thresholds(all_runs)                      # reads preds_val.csv only
     long = pd.concat([R.eval_long(sel, thr) for sel in sel_by_seed.values()], ignore_index=True)
     long_seed = long[long["seed"] == a.seed]
