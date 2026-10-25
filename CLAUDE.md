@@ -12,6 +12,7 @@ which is the single source of truth. Read it before any task.
 3. **No future information** may enter an input sequence: only records with T_REC ≤ t.
 4. **Never treat code as having run successfully** until the user pastes the actual output.
 5. Do not add architectures, losses, inputs or experiments beyond E0–E5 (+ optional E1w) without explicit approval.
+   Approved exploratory additions: focal-loss models E6–E8 (Change Log 16) and the post-hoc tuned-threshold/AUC evaluation (Change Log 15).
 6. Do not hard-code local paths or the JSOC e-mail; everything comes from `config/config.yaml`.
 7. Do not swallow errors. Log them and fail loudly.
 
@@ -40,7 +41,7 @@ src/flarecast/            importable package
   train/runner.py         train_run (AMP, early stopping on val TSS>=M, preds, cost.json)
   evaluate/               metrics.py, bootstrap.py, report.py
   (later) explain/
-scripts/                  numbered entry points (01_feasibility.py ... 05_memory_test.py, watch_*.py)
+scripts/                  numbered entry points (01_feasibility.py ... 07_evaluate.py, 04b_build_cache.py, 06b_queue_seeds.py, watch_*.py)
 tests/                    pytest unit tests (run: python -m pytest -q)
 outputs/                  run outputs (reports, CSV/JSON results); gitignored
 data/                     raw/processed data; gitignored
@@ -63,8 +64,11 @@ data/                     raw/processed data; gitignored
 | 4 | Dataset/DataLoader (static, single, dual) + loader check (`04_check_loader.py`) | **done**; `tests/test_module4.py` (17) |
 | 4b | Packed float16 frame cache (`04b_build_cache.py`, `dataset/cache.py`), Change Log 14 | **done**, 139,176 frames; `tests/test_cache.py` (8) |
 | 5 | Models E1–E5 + E0 persistence + GPU memory test (`05_memory_test.py`) | **done**; `tests/test_module5.py` (15) |
-| 6 | Training runner (`06_train.py`, `06_run_all.py`, `train/runner.py`) | **code done**, smoke-tested (E1, E4); full queue not started; `tests/test_module6_7.py` |
-| 7 | Evaluation (`07_evaluate.py`, `evaluate/`: metrics, cluster bootstrap, tables, figures) | **code done**, smoke-tested on E1/E4 |
+| 6 | Training runner (`06_train.py`, `06_run_all.py`, `train/runner.py`) | **done**; seed-0 queue finished (10 runs DONE); `tests/test_module6_7.py` |
+| 6b | Seeds 1 and 2 for the lr chosen per model on seed 0 (`06b_queue_seeds.py`) | **code done, not yet run** (no `_s1`/`_s2` runs exist); `tests/test_multiseed.py` (7) |
+| 7 | Evaluation (`07_evaluate.py`, `evaluate/`: metrics, cluster bootstrap, tables, figures) | **done** for seed 0 (results below); `--seeds` multi-seed path written and unit-tested but never run on real runs |
+| 6c | Focal models E6–E8 (`loss=focal`, gamma 2, alpha = inv. sqrt freq, train only) + queue `06c_queue_focal.py` (stage 1 E6–E8 x 2 lr x seed 0; stage 2 seeds 1, 2 for E1–E8 at the seed-0 lr). Smoke run of E6 OK (1 epoch); queue **not started** | code done; `tests/test_posthoc.py` |
+| 7b | Post-hoc evaluation (`evaluate/thresholds.py`, `07_evaluate.py`): argmax + two-stage thresholds tuned on val only + HSS variant + ROC/PR-AUC, pooled multi-seed bootstrap for E1vsE2…E6vsE5, ROC/PR and threshold figures | **done** on seed-0 E1–E5 |
 | 8 | Grad-CAM + figures and tables for the thesis | pending |
 
 Experiment priority if time is short: E1, E2, E3, then E4, E5, then Grad-CAM, then E1w.
@@ -82,7 +86,8 @@ Experiment priority if time is short: E1, E2, E3, then E4, E5, then Grad-CAM, th
   `data/processed/manifest.csv` is append-only and still holds earlier `failed` rows; the `.npy` files are the truth.
 - **Loader** (`flarecast.dataset.flare_dataset`): `FlareDataset(samples, frames_dir, mode)` with mode `static` (frame t →
   [1,128,128]), `single` ([31,1,128,128]) or `dual` (coarse [16,1,128,128] = frames[0::2], fine [16,1,128,128] = frames[15:]).
-  `make_loaders(mode, batch_size, num_workers, *, samples, frames_dir, seed=0)` → dict of train/val/test `DataLoader`s.
+  `make_loaders(mode, batch_size, num_workers, *, samples, frames_dir, seed=0, worker_init_fn=None, use_cache=True, cache_dir=None)` → dict of train/val/test `DataLoader`s.
+  `tests/test_module4.py` wraps both with `use_cache=False` (it tests the per-frame path); cache equivalence is in `tests/test_cache.py`.
   `class_weights(samples)` → w_c = N/(K·N_c) from the train split only (E5). Helpers: `load_samples`, `filter_available`.
 - **Models** (`flarecast.models.models`): `build_model("E1"…"E5")` (E5 = E4 architecture; only the loss differs),
   `persistence_predict(persistence_label)` for E0, `count_params`. Params: E1 249,411; E2 381,507; E3 521,795; E4 538,435.
@@ -90,9 +95,31 @@ Experiment priority if time is short: E1, E2, E3, then E4, E5, then Grad-CAM, th
   batch 16 at 128 px peaks ≈ 3.0–3.1 GB for E2/E3, batch 8 ≈ 1.5 GB. Batch 8 for **all** models is approved and recorded
   (decisions.md §9, Change Log 12; `loader.batch_size: 8`). Do not use a different batch size per model.
 - **Command style**: `conda run -n flare --no-capture-output python scripts/<name>.py` and
-  `conda run -n flare --no-capture-output python -m pytest -q` (147 tests pass).
-- **Training/eval** (Modules 6-7): runs in `outputs/runs/<model>_lr<lr>_s<seed>[_<tag>]/` (history.csv, best.pt, preds_<split>.csv, cost.json, DONE). `06_run_all.py` queues E1-E5 x lr {1e-3, 3e-4} x seed 0 and skips DONE runs; `07_evaluate.py [--tag T]` selects per model by val TSS>=M only and writes `outputs/results/` and `outputs/figures/`. Runs are not bit-reproducible (cudnn.benchmark + AMP). Without the cache E4 was data-bound (~510 s/epoch); with it ~61 s/epoch (num_workers 4 kept, same as 8).
-- **Next**: start the full queue (user runs it), then Module 8 (Grad-CAM for E1-E5 on the same test samples, figures).
+  `conda run -n flare --no-capture-output python -m pytest -q` (154 tests pass).
+- **Training/eval** (Modules 6-7): runs in `outputs/runs/<model>_lr<lr>_s<seed>[_<tag>]/` (history.csv incl. `data_wait_s`, best.pt
+  = `{"model": state_dict, epoch, ...}`, preds_<split>.csv, cost.json, run.json, DONE). Tagged runs (`smoke`, `cachetest_w*`) are ignored by
+  the default evaluation. `06_run_all.py [--num-workers N]` queues E1-E5 x lr {1e-3, 3e-4} x seed 0 and skips DONE runs (one process
+  per run; a failed run is reported, never retried). `07_evaluate.py [--tag T] [--seed S] [--seeds 0 1 2]` selects per model by
+  **val TSS>=M only** (lr chosen on `--seed`, reused for other seeds), E0 comes from `persistence_label` in the preds files, and
+  writes `outputs/results/` (CSVs + `results_summary.md`; `results/<tag>/` for tagged runs) and `outputs/figures/` (300 dpi PNG+PDF:
+  per-run loss curves, val TSS per epoch, confusion matrices val+test). Bootstrap = paired cluster bootstrap over test HARPs
+  (2,000 resamples, seed 0, difference = second - first, "supported" only if CI lower bound > 0; recall X "descriptive only" while
+  test X < 10). Multi-seed verdicts additionally require all per-seed estimates to have the same sign.
+- **Speed**: epoch time was data-bound until the frame cache (E4 ~510 s/epoch from per-frame files, cold reads ~600 files/s;
+  ~61 s/epoch with the cache, `num_workers` 0/4/8 = 66/61/61 s, 4 kept). A 30-epoch dual-branch run is <= ~30 min.
+- **Reproducibility**: runs are NOT bit-reproducible (`cudnn.benchmark=True` + AMP; identical E1 smoke runs gave val TSS 0.189 vs 0.125).
+  Treat single-seed differences with caution.
+- **Seed-0 results** (full queue, selected lr per model; test n=856, 63 HARPs, 7 X; from `outputs/results/results_summary.md`):
+  test TSS>=M E0 0.405, E1 0.479 (lr 3e-4), E2 0.370 (3e-4), E3 0.525 (3e-4), E4 0.508 (1e-3), E5 0.523 (3e-4); recall M E0 0.338, E1 0.541,
+  E2 0.432, E3 0.622, E4 0.622, E5 0.865 (precision >=M falls 0.35 -> 0.21, HSS 0.375 -> 0.213); recall X = 0 for E1-E5 (E0: 2/7, descriptive).
+  Bootstrap (95% CI of test TSS>=M difference): E2-E1 -0.109 [-0.179, -0.001] (reverse, H1 not supported); E3-E2 +0.155 [0.019, 0.287]
+  (supported); E4-E3 -0.017 [-0.091, 0.071] and E5-E4 +0.015 [-0.133, 0.189] (not supported); no model differs from E0 (all CIs include 0);
+  E5-E4 recall M +0.243 [0.089, 0.411] (supported). Train TSS 0.67-0.77 vs test 0.37-0.53 (overfits quickly; best epochs 3-11).
+  Single seed only: these verdicts are provisional until seeds 1 and 2 are run.
+- **Next**: (1) user runs `06b_queue_seeds.py` (seeds 1, 2 at the chosen lr; `--dry-run` first) then `07_evaluate.py --seeds 0 1 2`; check the
+  multi-seed path on real output (never run yet); (2) Module 8: Grad-CAM for E1-E5 on the same test samples (about 2 TP, 2 FN, 2 FP, decisions.md §11,
+  Change Log 13; load `best.pt["model"]`), thesis figures/tables; (3) thesis text must state the TAI/UTC note (decisions.md §4), the
+  catalogue-completeness rule, the batch-8 and cache deviations, and that X is descriptive only.
 
 ## Lessons learned / gotchas
 - JSOC returns `QUALITY` as **hex strings** (`0x00000400`); query with drms `convert_numeric=False` and parse with `parse_quality`.
@@ -104,3 +131,11 @@ Experiment priority if time is short: E1, E2, E3, then E4, E5, then Grad-CAM, th
 - Windows: any multi-worker `DataLoader` script needs the `if __name__ == "__main__":` guard (spawn).
 - The GPU has only **~3.3 GB free** of 4 GB; use `05_memory_test.py` numbers before changing batch size or image size.
 - Long background jobs: never stop or restart them without the user's consent; report failures and ask before retrying.
+- `conda run ... python -c "<multi-line>"` fails (conda rejects newlines in arguments); write a script file (use the scratchpad) instead.
+  Large Bash heredocs containing quotes/backslashes can also be rejected by the shell tool: write the file with the Write tool, then run it.
+- Source files mix LF/CRLF; when patching with scripts read with `newline=""` and keep the original line ending.
+- `Path.with_suffix` on names containing a dot (e.g. `loss_E1_lr0.0003_s0`) truncates the name; build `f"{base}.png"` instead.
+- First batch of a persistent-worker `DataLoader` takes ~20 s on Windows (spawn); exclude it when timing. A 20-minute foreground command
+  is cut off by the tool timeout (10 min): run long jobs in the background.
+- Cold per-frame reads are the training bottleneck; always train with the packed cache (`04b_build_cache.py`; rebuild if frames change).
+- Bootstrap CIs on 63 test HARPs are wide (about +/-0.1-0.3 TSS), so most between-model differences are not detectable; do not over-interpret point estimates.

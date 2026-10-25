@@ -6,6 +6,7 @@ Input conventions (match flarecast.dataset.FlareDataset):
     E3  DualLSTM        coarse [B,16,1,H,W], fine [B,16,1,H,W]
     E4  DualLSTMAttn    same as E3; ``return_attention=True`` also returns the attention weights
     E5  = E4 architecture; it differs only in the (class-weighted) loss, which the training code handles.
+    E6/E7/E8 = E4/E2/E1 architecture with focal loss (exploratory, Change Log 16); the loss is in the training code.
 All models return logits [B,3]. E0 (persistence) is :func:`persistence_predict`.
 """
 from __future__ import annotations
@@ -157,11 +158,14 @@ def persistence_predict(persistence_label) -> torch.Tensor:
     return y
 
 
-_MODELS = {"E1": StaticCNN, "E2": SingleLSTM, "E3": DualLSTM, "E4": DualLSTMAttn, "E5": DualLSTMAttn}
+# E5 = E4 architecture + class-weighted CE; E6 = E4 + focal; E7 = E2 + focal; E8 = E1 + focal (Change Logs 15-16).
+_MODELS = {"E1": StaticCNN, "E2": SingleLSTM, "E3": DualLSTM, "E4": DualLSTMAttn, "E5": DualLSTMAttn,
+           "E6": DualLSTMAttn, "E7": SingleLSTM, "E8": StaticCNN}
 
 
 def build_model(name: str) -> nn.Module:
-    """Factory for the trainable models E1-E5 (E5 = E4 architecture; the loss differs). E0 is not a model."""
+    """Factory for the trainable models E1-E8 (E5 = E4, E6 = E4, E7 = E2, E8 = E1 architecture; only the loss differs).
+    E0 is not a model."""
     key = str(name).upper()
     if key not in _MODELS:
         raise ValueError(f"Unknown model {name!r}; choose from {sorted(_MODELS)} "

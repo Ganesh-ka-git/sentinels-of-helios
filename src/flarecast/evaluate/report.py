@@ -15,11 +15,15 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from .metrics import CLASS_NAMES, confusion_matrix, probs_to_pred, row_normalise, summarise  # noqa: E402
+from .thresholds import (GRID, auc_scores, macro_tss, score_ge_m, threshold_curves, tune_run,  # noqa: E402
+                         two_stage_predict)
 
 log = logging.getLogger(__name__)
 
-MODELS = ["E1", "E2", "E3", "E4", "E5"]
-COLORS = {"E0": "#666666", "E1": "#0072B2", "E2": "#E69F00", "E3": "#009E73", "E4": "#CC79A7", "E5": "#D55E00"}
+MODELS = ["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"]
+COLORS = {"E0": "#666666", "E1": "#0072B2", "E2": "#E69F00", "E3": "#009E73", "E4": "#CC79A7", "E5": "#D55E00",
+          "E6": "#56B4E9", "E7": "#332288", "E8": "#999933"}
+FOCAL = ("E6", "E7", "E8")
 TABLE_COLS = ["tss_ge_m", "hss_ge_m", "macro_f1", "recall_M", "recall_X"]
 PROB_COLS = ["p0", "p1", "p2"]
 
@@ -49,6 +53,54 @@ def select_best(runs: pd.DataFrame) -> pd.DataFrame:
         return runs
     ordered = runs.sort_values(["model", "val_tss_ge_m", "lr"], ascending=[True, False, True])
     return ordered.groupby("model", sort=True).head(1).reset_index(drop=True)
+
+
+SEED_METRICS = ["tss_ge_m", "hss_ge_m", "recall_M", "recall_X"]
+
+
+def select_seed_runs(runs_dir: Path, tag: str | None, selected0: pd.DataFrame, seeds: list[int]) -> dict[int, pd.DataFrame]:
+    """Per seed the runs of the (model, lr) pairs chosen on seed 0 by validation TSS>=M (no re-selection per seed).
+
+    Fails loudly if a selected (model, lr) has no finished run for a requested seed.
+    """
+    out = {}
+    for s in seeds:
+        runs = selected0 if s == 0 else discover_runs(runs_dir, tag, s)
+        rows = []
+        for r in selected0.itertuples():
+            hit = runs[(runs["model"] == r.model) & np.isclose(runs["lr"], r.lr)]
+            if hit.empty:
+                raise SystemExit(f"Missing finished run: model={r.model} lr={r.lr:g} seed={s} tag={tag!r}")
+            rows.append(hit.iloc[0])
+        out[s] = pd.DataFrame(rows).reset_index(drop=True)
+    return out
+
+
+def seed_metric_table(sel_by_seed: dict[int, pd.DataFrame]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(long table: model, split, seed, metrics; aggregated: mean and sd (ddof=1) over seeds) for val and test."""
+    rows = []
+    for s, sel in sel_by_seed.items():
+        for r in sel.itertuples():
+            for sp in ("val", "test"):
+                d = load_preds(r.run_dir, sp)
+                m = summarise(d["label"], pred_of(d))
+                rows.append({"model": r.model, "lr": r.lr, "split": sp, "seed": s, **{k: m[k] for k in SEED_METRICS}})
+    long = pd.DataFrame(rows)
+    g = long.groupby(["model", "split"], sort=True)
+    agg = g[SEED_METRICS].agg(["mean", "std"])
+    agg.columns = [f"{k}_{'sd' if f == 'std' else f}" for k, f in agg.columns]
+    agg.insert(0, "n_seeds", g.size())
+    agg.insert(0, "lr", g["lr"].first())
+    return long, agg.reset_index()
+
+
+def seed_md_table(agg: pd.DataFrame) -> pd.DataFrame:
+    """Compact 'mean ± sd' strings for the markdown summary."""
+    out = agg[["model", "split", "lr", "n_seeds"]].copy()
+    for k in SEED_METRICS:
+        out[k] = [f"{m:.3f} ± {s:.3f}" if np.isfinite(m) and np.isfinite(s) else "n/a"
+                  for m, s in zip(agg[f"{k}_mean"], agg[f"{k}_sd"])]
+    return out
 
 
 def load_preds(run_dir: str | Path, split: str) -> pd.DataFrame:
@@ -176,7 +228,8 @@ def fig_loss(run_dir: Path, out_dir: Path) -> None:
     ax.plot(h["epoch"], h["val_loss"], color="#D55E00", lw=2, ls="--", label="validation loss")
     best = h.loc[h["is_best"].astype(bool), "epoch"].max()
     ax.axvline(best, color="#666666", lw=1, ls=":", label=f"best val TSS≥M (epoch {best})")
-    _style(ax, "epoch", "cross-entropy" + (" (class-weighted)" if r["model"] == "E5" else ""))
+    _style(ax, "epoch", "focal loss (γ=2)" if r["model"] in FOCAL else
+           "cross-entropy" + (" (class-weighted)" if r["model"] == "E5" else ""))
     ax.set_title(f"{r['model']}, lr={r['lr']:g}, seed {r['seed']}", fontsize=10)
     ax.legend(frameon=False, fontsize=8)
     _save(fig, out_dir / f"loss_{r['model']}_lr{r['lr']:g}_s{r['seed']}")
@@ -185,7 +238,7 @@ def fig_loss(run_dir: Path, out_dir: Path) -> None:
 def fig_val_tss(runs: pd.DataFrame, selected: pd.DataFrame, out_dir: Path) -> None:
     fig, ax = plt.subplots(figsize=(6.2, 3.8))
     sel = set(selected["run_dir"])
-    styles = {lr: ls for lr, ls in zip(sorted(runs["lr"], reverse=True), ["-", "--", ":", "-."])}
+    styles = {lr: ls for lr, ls in zip(sorted(set(runs["lr"]), reverse=True), ["-", "--", ":", "-."])}
     for r in runs.sort_values(["model", "lr"]).itertuples():
         h = pd.read_csv(Path(r.run_dir) / "history.csv")
         ax.plot(h["epoch"], h["val_tss_ge_m"], color=COLORS[r.model], ls=styles[r.lr],
@@ -196,7 +249,7 @@ def fig_val_tss(runs: pd.DataFrame, selected: pd.DataFrame, out_dir: Path) -> No
     _save(fig, out_dir / "val_tss_per_epoch")
 
 
-def fig_confusion(model: str, conf_val: pd.DataFrame, conf_test: pd.DataFrame, out_dir: Path) -> None:
+def fig_confusion(model: str, conf_val: pd.DataFrame, conf_test: pd.DataFrame, out_dir: Path, suffix: str = "") -> None:
     fig, axes = plt.subplots(1, 2, figsize=(7.2, 3.4))
     for ax, (name, c) in zip(axes, (("validation", conf_val), ("test", conf_test))):
         c = c[c["model"] == model]
@@ -212,6 +265,195 @@ def fig_confusion(model: str, conf_val: pd.DataFrame, conf_test: pd.DataFrame, o
         ax.set_yticks(range(3), CLASS_NAMES)
         ax.set_xlabel("predicted")
         ax.set_ylabel("true")
-        ax.set_title(f"{model} – {name}", fontsize=10)
+        ax.set_title(f"{model} – {name}" + (f" ({suffix})" if suffix else ""), fontsize=10)
     fig.tight_layout()
-    _save(fig, out_dir / f"confusion_{model}")
+    _save(fig, out_dir / (f"confusion_{model}" + (f"_{suffix}" if suffix else "")))
+
+
+# ================================================================ post-hoc: tuned thresholds, AUC (Change Log 15)
+VARIANTS = ["argmax", "tuned_tss", "tuned_hss"]
+VARIANT_LABEL = {"argmax": "argmax (pre-registered)", "tuned_tss": "tuned τ (val TSS≥M)", "tuned_hss": "tuned τ (val HSS≥M)"}
+EVAL_METRICS = ["tss_ge_m", "hss_ge_m", "precision_ge_m", "far", "recall_M", "recall_X", "tss_ovr_<M", "tss_ovr_M",
+                "tss_ovr_X", "macro_tss", "roc_auc", "pr_auc"]
+MAIN_EVAL = ["tss_ge_m", "hss_ge_m", "precision_ge_m", "far", "recall_M", "recall_X", "macro_tss", "roc_auc", "pr_auc"]
+
+
+def run_thresholds(runs: pd.DataFrame) -> pd.DataFrame:
+    """Thresholds of every run in ``runs`` (tuned on that run's preds_val.csv only; no test file is opened)."""
+    rows = []
+    for r in runs.itertuples():
+        rows.append({"model": r.model, "lr": r.lr, "seed": r.seed, **tune_run(r.run_dir)})
+    return pd.DataFrame(rows)
+
+
+def _thr_of(thr: pd.DataFrame, model: str, lr: float, seed: int) -> dict:
+    t = thr[(thr["model"] == model) & np.isclose(thr["lr"], lr) & (thr["seed"] == seed)]
+    if len(t) != 1:
+        raise ValueError(f"thresholds for {model} lr={lr:g} seed={seed}: {len(t)} rows (expected 1)")
+    return t.iloc[0].to_dict()
+
+
+def predict_variant(df: pd.DataFrame, variant: str, thr: dict | None) -> np.ndarray:
+    """Predicted classes of one prediction file under argmax / tuned_tss / tuned_hss thresholds."""
+    p = df[PROB_COLS].to_numpy()
+    if variant == "argmax":
+        return probs_to_pred(p)
+    if thr is None:
+        raise ValueError(f"variant {variant!r} needs thresholds")
+    if variant == "tuned_tss":
+        return two_stage_predict(p, thr["tau1"], thr["tau2"])
+    if variant == "tuned_hss":
+        return two_stage_predict(p, thr["tau1_hss"], thr["tau2_hss"])
+    raise ValueError(f"unknown variant {variant!r}")
+
+
+def metric_row(df: pd.DataFrame, pred: np.ndarray, probs: np.ndarray | None = None) -> dict[str, float]:
+    """Metrics of ``pred`` + false-alarm ratio FP/(TP+FP), macro TSS and the threshold-free AUCs of ``probs``
+    (default: the probability columns of ``df``)."""
+    y = df["label"].to_numpy()
+    m = summarise(y, pred)
+    out = {k: m[k] for k in EVAL_METRICS if k in m}
+    out["far"] = 1.0 - m["precision_ge_m"] if np.isfinite(m["precision_ge_m"]) else float("nan")
+    out["macro_tss"] = macro_tss(confusion_matrix(y, pred))
+    out.update(auc_scores(y, df[PROB_COLS].to_numpy() if probs is None else probs))
+    return out
+
+
+def eval_long(selected: pd.DataFrame, thr: pd.DataFrame, splits=("val", "test")) -> pd.DataFrame:
+    """One row per (model, variant, split) for the selected runs of ONE seed, plus the E0 persistence rows.
+    ``thr`` = :func:`run_thresholds` output (looked up by model, lr, seed)."""
+    rows = []
+    for sp in splits:
+        d0 = load_preds(selected.iloc[0]["run_dir"], sp)
+        pl = d0["persistence_label"].to_numpy()
+        rows.append({"model": "E0", "lr": np.nan, "seed": int(selected.iloc[0]["seed"]), "variant": "persistence",
+                     "split": sp, "tau1": np.nan, "tau2": np.nan, **metric_row(d0, pl, np.eye(3)[pl])})
+    for r in selected.itertuples():
+        t = _thr_of(thr, r.model, r.lr, r.seed)
+        for sp in splits:
+            d = load_preds(r.run_dir, sp)
+            for v in VARIANTS:
+                tau1, tau2 = {"argmax": (np.nan, np.nan), "tuned_tss": (t["tau1"], t["tau2"]),
+                              "tuned_hss": (t["tau1_hss"], t["tau2_hss"])}[v]
+                rows.append({"model": r.model, "lr": r.lr, "seed": r.seed, "variant": v, "split": sp,
+                             "tau1": tau1, "tau2": tau2, **metric_row(d, predict_variant(d, v, t))})
+    return pd.DataFrame(rows)
+
+
+def eval_seed_summary(long: pd.DataFrame) -> pd.DataFrame:
+    """mean and sd (ddof=1) over seeds per (model, variant, split) of every metric in ``long`` (all seeds stacked)."""
+    g = long.groupby(["model", "variant", "split"], sort=False)
+    agg = g[EVAL_METRICS].agg(["mean", "std"])
+    agg.columns = [f"{k}_{'sd' if f == 'std' else f}" for k, f in agg.columns]
+    agg.insert(0, "n_seeds", g["seed"].nunique())
+    return agg.reset_index()
+
+
+def eval_md_table(long: pd.DataFrame, split: str, variants: list[str], metrics: list[str] = MAIN_EVAL) -> pd.DataFrame:
+    """Compact table for the markdown summary; when ``long`` stacks several seeds, cells are 'mean ± sd'."""
+    d = long[(long["split"] == split) & long["variant"].isin(variants)]
+    multi = d["seed"].nunique() > 1
+    rows = []
+    for (model, variant), g in d.groupby(["model", "variant"], sort=False):
+        row = {"model": model, "variant": variant, "n_seeds": g["seed"].nunique()}
+        if not multi:
+            row["tau1"], row["tau2"] = g["tau1"].iloc[0], g["tau2"].iloc[0]
+        for k in metrics:
+            if multi:
+                m, s = g[k].mean(), g[k].std(ddof=1)
+                row[k] = f"{m:.3f} ± {s:.3f}" if np.isfinite(m) and np.isfinite(s) else "n/a"
+            else:
+                row[k] = g[k].iloc[0]
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def confusion_variants(selected: pd.DataFrame, thr: pd.DataFrame, variants: list[str], splits=("val", "test")) -> pd.DataFrame:
+    rows = []
+    for r in selected.itertuples():
+        t = _thr_of(thr, r.model, r.lr, r.seed)
+        for sp in splits:
+            d = load_preds(r.run_dir, sp)
+            for v in variants:
+                cm = confusion_matrix(d["label"], predict_variant(d, v, t))
+                rn = row_normalise(cm)
+                for i, a in enumerate(CLASS_NAMES):
+                    for j, b in enumerate(CLASS_NAMES):
+                        rows.append({"model": r.model, "variant": v, "split": sp, "true": a, "pred": b,
+                                     "count": int(cm[i, j]), "row_normalised": rn[i, j]})
+    return pd.DataFrame(rows)
+
+
+def tuned_test_preds(sel_by_seed: dict[int, pd.DataFrame], thr: pd.DataFrame, variant: str):
+    """(reference aligned test frame, {seed: {model: predicted classes}}, {seed: {model: >=M score}}) for the bootstrap.
+    Thresholds come from validation only (``thr``). Raises if the seeds' test samples differ."""
+    ref, preds, scores = None, {}, {}
+    for s, sel in sel_by_seed.items():
+        aligned = align_on_samples({r.model: load_preds(r.run_dir, "test") for r in sel.itertuples()})
+        first = next(iter(aligned.values()))
+        if ref is None:
+            ref = first
+        elif not (first[["harpnum", "t"]].equals(ref[["harpnum", "t"]]) and first["label"].equals(ref["label"])):
+            raise ValueError(f"Test samples of seed {s} differ from the first seed")
+        pl = first["persistence_label"].to_numpy()
+        preds[s], scores[s] = {"E0": pl}, {"E0": (pl >= 1).astype(float)}
+        for r in sel.itertuples():
+            preds[s][r.model] = predict_variant(aligned[r.model], variant, _thr_of(thr, r.model, r.lr, s))
+            scores[s][r.model] = score_ge_m(aligned[r.model][PROB_COLS].to_numpy())
+    return ref, preds, scores
+
+
+# ---------------------------------------------------------------- figures: ROC / PR / thresholds
+def fig_roc_pr(selected: pd.DataFrame, aligned_test: dict[str, pd.DataFrame], out_dir: Path) -> None:
+    """ROC and precision-recall curves of P(>=M), all selected models on the test set; E0 as a single operating point."""
+    from sklearn.metrics import precision_recall_curve, roc_auc_score, roc_curve
+    first = aligned_test["E0"]
+    y = (first["label"].to_numpy() >= 1).astype(int)
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(9.6, 4.2))
+    for m in selected["model"]:
+        s = score_ge_m(aligned_test[m][PROB_COLS].to_numpy())
+        fpr, tpr, _ = roc_curve(y, s)
+        pr, rc, _ = precision_recall_curve(y, s)
+        ls = "--" if m in FOCAL else "-"
+        a1.plot(fpr, tpr, color=COLORS[m], ls=ls, lw=1.6, label=f"{m} (AUC {roc_auc_score(y, s):.3f})")
+        a2.plot(rc, pr, color=COLORS[m], ls=ls, lw=1.6, label=m)
+    pl = (first["persistence_label"].to_numpy() >= 1).astype(int)
+    tp, fp = int(((pl == 1) & (y == 1)).sum()), int(((pl == 1) & (y == 0)).sum())
+    a1.scatter([fp / max((y == 0).sum(), 1)], [tp / max(y.sum(), 1)], color=COLORS["E0"], marker="s", zorder=5,
+               label="E0 persistence")
+    a2.scatter([tp / max(y.sum(), 1)], [tp / max(tp + fp, 1)], color=COLORS["E0"], marker="s", zorder=5, label="E0")
+    a1.plot([0, 1], [0, 1], color="#aaaaaa", lw=0.8, ls=":")
+    a2.axhline(y.mean(), color="#aaaaaa", lw=0.8, ls=":")
+    _style(a1, "false-positive rate", "true-positive rate")
+    _style(a2, "recall (≥M)", "precision (≥M)")
+    a1.xaxis.set_major_locator(matplotlib.ticker.AutoLocator())
+    a2.xaxis.set_major_locator(matplotlib.ticker.AutoLocator())
+    a1.set_title("ROC, test (≥M)", fontsize=10)
+    a2.set_title("Precision–recall, test (≥M); dotted = prevalence", fontsize=10)
+    a1.legend(frameon=False, fontsize=7, loc="lower right")
+    a2.legend(frameon=False, fontsize=7, ncol=2)
+    fig.tight_layout()
+    _save(fig, out_dir / "roc_pr_test")
+
+
+def fig_threshold_curves(selected: pd.DataFrame, thr: pd.DataFrame, out_dir: Path) -> None:
+    """Validation TSS>=M and HSS>=M versus tau1, and TSS_X versus tau2 (at the TSS-optimal tau1); stars = chosen values."""
+    fig, axes = plt.subplots(1, 3, figsize=(12.6, 3.8))
+    for r in selected.itertuples():
+        d = load_preds(r.run_dir, "val")
+        c = threshold_curves(d["label"].to_numpy(), d[PROB_COLS].to_numpy())
+        t = _thr_of(thr, r.model, r.lr, r.seed)
+        ls = "--" if r.model in FOCAL else "-"
+        col = COLORS[r.model]
+        for ax, key, tau in zip(axes, ("tss_ge_m", "hss_ge_m", "tss_X"), (t["tau1"], t["tau1_hss"], t["tau2"])):
+            ax.plot(c["grid"], c[key], color=col, ls=ls, lw=1.5, label=r.model)
+            i = int(np.argmin(np.abs(c["grid"] - tau)))
+            ax.scatter([tau], [c[key][i]], color=col, marker="*", s=70, zorder=5)
+    for ax, xl, yl in zip(axes, ("τ1 (on P(≥M))", "τ1 (on P(≥M))", "τ2 (on P(X | ≥M), at the TSS-optimal τ1)"),
+                          ("validation TSS≥M", "validation HSS≥M", "validation TSS_X")):
+        _style(ax, xl, yl)
+        ax.xaxis.set_major_locator(matplotlib.ticker.AutoLocator())
+    axes[0].legend(frameon=False, fontsize=7, ncol=2)
+    fig.suptitle("Validation threshold curves (★ = chosen; selected runs, validation data only)", fontsize=10)
+    fig.tight_layout()
+    _save(fig, out_dir / "threshold_curves_val")

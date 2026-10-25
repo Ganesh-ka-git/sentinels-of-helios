@@ -105,6 +105,20 @@ def class_weights(samples: pd.DataFrame, n_classes: int = N_CLASSES) -> torch.Te
     return torch.tensor(len(y) / (n_classes * counts), dtype=torch.float32)
 
 
+def focal_alpha(samples: pd.DataFrame, n_classes: int = N_CLASSES) -> torch.Tensor:
+    """Focal-loss class factors (Change Log 16): alpha_c proportional to 1/sqrt(N_c/N) from the TRAIN split only,
+    normalised to mean 1 over the classes."""
+    y = samples.loc[samples["split"] == "train", "label"].to_numpy()
+    if len(y) == 0:
+        raise ValueError("No training samples: cannot compute focal alpha.")
+    counts = np.bincount(y, minlength=n_classes).astype(float)
+    if (counts == 0).any():
+        raise ValueError(f"Focal alpha undefined: classes {list(np.where(counts == 0)[0])} have no training samples "
+                         f"(train counts {counts.astype(int).tolist()}).")
+    a = 1.0 / np.sqrt(counts / counts.sum())
+    return torch.tensor(a / a.mean(), dtype=torch.float32)
+
+
 class FlareDataset(Dataset):
     """Returns (inputs, label, meta).
 

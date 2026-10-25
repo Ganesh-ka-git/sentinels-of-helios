@@ -19,14 +19,17 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 
-from ..dataset import class_weights, filter_available, load_samples, make_loaders
+from ..dataset import class_weights, filter_available, focal_alpha, load_samples, make_loaders
 from ..dataset.flare_dataset import SPLITS
 from ..evaluate.metrics import probs_to_pred, summarise
 from ..models import build_model, count_params
 
 log = logging.getLogger(__name__)
 
-MODE_OF = {"E1": "static", "E2": "single", "E3": "dual", "E4": "dual", "E5": "dual"}
+MODE_OF = {"E1": "static", "E2": "single", "E3": "dual", "E4": "dual", "E5": "dual",
+           "E6": "dual", "E7": "single", "E8": "static"}
+FOCAL_MODELS = ("E6", "E7", "E8")   # exploratory focal-loss models (Change Log 16)
+FOCAL_GAMMA = 2.0                   # Lin et al. 2017, fixed
 WEIGHT_DECAY = 1e-4
 PATIENCE = 5
 MIN_AVAILABLE = 0.95
@@ -57,13 +60,35 @@ def worker_init_fn(worker_id: int) -> None:
 
 # ---------------------------------------------------------------- loss
 def loss_weights(model_name: str, samples: pd.DataFrame) -> torch.Tensor | None:
-    """E5 only: w_c = N/(K*N_c) from the TRAIN rows of ``samples``; None (plain cross-entropy) otherwise."""
-    return class_weights(samples) if model_name == "E5" else None
+    """Per-class loss factors from the TRAIN rows of ``samples``: E5 w_c = N/(K*N_c) (class-weighted CE);
+    E6-E8 focal alpha_c (inverse sqrt class frequency, mean 1); None (plain cross-entropy) otherwise."""
+    if model_name == "E5":
+        return class_weights(samples)
+    if model_name in FOCAL_MODELS:
+        return focal_alpha(samples)
+    return None
 
 
-def batch_loss(logits: torch.Tensor, y: torch.Tensor, w: torch.Tensor | None):
-    """(mean loss for backward, summed loss, normaliser). With weights the mean is the weighted mean
-    (sum w_y * l / sum w_y), identical to ``F.cross_entropy(..., weight=w)``."""
+def loss_gamma(model_name: str) -> float | None:
+    """Focal gamma for E6-E8, None for cross-entropy models."""
+    return FOCAL_GAMMA if model_name in FOCAL_MODELS else None
+
+
+def focal_loss_sum(logits: torch.Tensor, y: torch.Tensor, alpha: torch.Tensor | None, gamma: float) -> torch.Tensor:
+    """Per-sample focal loss -alpha_y (1 - p_y)^gamma log p_y (unreduced, shape [B])."""
+    logp = F.log_softmax(logits.float(), dim=1).gather(1, y[:, None])[:, 0]
+    loss = -((1.0 - logp.exp()) ** gamma) * logp
+    return loss if alpha is None else alpha[y] * loss
+
+
+def batch_loss(logits: torch.Tensor, y: torch.Tensor, w: torch.Tensor | None, gamma: float | None = None):
+    """(mean loss for backward, summed loss, normaliser). Cross-entropy (gamma None): with weights the mean is the
+    weighted mean (sum w_y * l / sum w_y), identical to ``F.cross_entropy(..., weight=w)``. Focal (gamma set; ``w`` is
+    alpha): the plain mean over the batch (normaliser = batch size)."""
+    if gamma is not None:
+        s = focal_loss_sum(logits, y, w, gamma).sum()
+        den = torch.tensor(float(len(y)), device=y.device)
+        return s / den, s.detach(), den
     s = F.cross_entropy(logits.float(), y, weight=w, reduction="sum")
     den = w[y].sum() if w is not None else torch.tensor(float(len(y)), device=y.device)
     return s / den, s.detach(), den.detach()
@@ -81,7 +106,8 @@ def _forward(model, x):
 
 
 @torch.no_grad()
-def predict(model, loader, device: str, w: torch.Tensor | None = None) -> tuple[pd.DataFrame, float]:
+def predict(model, loader, device: str, w: torch.Tensor | None = None,
+            gamma: float | None = None) -> tuple[pd.DataFrame, float]:
     """Eval-mode softmax probabilities + mean loss (same loss definition as training) over a loader."""
     model.eval()
     rows, s_tot, d_tot = [], 0.0, 0.0
@@ -90,7 +116,7 @@ def predict(model, loader, device: str, w: torch.Tensor | None = None) -> tuple[
         x, y = _to_device(x, device), y.to(device)
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=amp):
             logits = _forward(model, x)
-        _, s, d = batch_loss(logits, y, w)
+        _, s, d = batch_loss(logits, y, w, gamma)
         s_tot, d_tot = s_tot + s.item(), d_tot + d.item()
         p = torch.softmax(logits.float(), dim=1).cpu().numpy()
         rows.append(pd.DataFrame({"harpnum": meta["harpnum"].numpy(), "t": list(meta["t"]), "label": y.cpu().numpy(),
@@ -167,6 +193,7 @@ def _train(model_name, lr, seed, cfg, max_epochs, tag, num_workers, run_dir, sam
                 raise RuntimeError(f"Split {sp}: only {av}/{tot} samples available (< {MIN_AVAILABLE:.0%}); stopping")
     w = loss_weights(model_name, samples)
     w_dev = w.to(device) if w is not None else None
+    gamma = loss_gamma(model_name)
 
     loaders = make_loaders(mode, batch_size, num_workers, samples=samples, frames_dir=frames_dir, seed=seed,
                            worker_init_fn=worker_init_fn if num_workers > 0 else None, use_cache=use_cache,
@@ -181,7 +208,8 @@ def _train(model_name, lr, seed, cfg, max_epochs, tag, num_workers, run_dir, sam
 
     meta = {"model": model_name, "mode": mode, "lr": lr, "seed": seed, "tag": tag, "max_epochs": max_epochs,
             "batch_size": batch_size, "num_workers": num_workers, "use_cache": use_cache, "weight_decay": WEIGHT_DECAY, "patience": PATIENCE,
-            "class_weights": None if w is None else [float(v) for v in w],
+            "loss": "focal" if gamma is not None else ("weighted_ce" if w is not None else "ce"), "focal_gamma": gamma,
+            "class_weights": None if w is None else [float(v) for v in w],   # E5 w_c, or focal alpha_c for E6-E8
             "n_samples": {sp: int((samples["split"] == sp).sum()) for sp in SPLITS}, "device": device,
             "torch": torch.__version__, "started_utc": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     (run_dir / "run.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
@@ -202,7 +230,7 @@ def _train(model_name, lr, seed, cfg, max_epochs, tag, num_workers, run_dir, sam
             opt.zero_grad(set_to_none=True)
             with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=device == "cuda"):
                 logits = _forward(model, x)
-            loss, s, d = batch_loss(logits, y, w_dev)
+            loss, s, d = batch_loss(logits, y, w_dev, gamma)
             if not torch.isfinite(loss):
                 raise FloatingPointError(f"{run_dir.name}: non-finite training loss at epoch {epoch}")
             scaler.scale(loss).backward()
@@ -210,7 +238,7 @@ def _train(model_name, lr, seed, cfg, max_epochs, tag, num_workers, run_dir, sam
             scaler.update()
             s_tot, d_tot = s_tot + s.item(), d_tot + d.item()
             t_wait = time.perf_counter()
-        val_df, val_loss = predict(model, loaders["val"], device, w_dev)
+        val_df, val_loss = predict(model, loaders["val"], device, w_dev, gamma)
         vm = val_metrics(val_df)
         if not np.isfinite(vm["tss_ge_m"]):
             raise ValueError(f"{run_dir.name}: validation TSS>=M undefined (a class is empty in val)")
@@ -239,7 +267,7 @@ def _train(model_name, lr, seed, cfg, max_epochs, tag, num_workers, run_dir, sam
     ckpt = torch.load(run_dir / "best.pt", map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model"])
     for sp, ld in loaders.items():
-        df, _ = predict(model, ld, device, w_dev)
+        df, _ = predict(model, ld, device, w_dev, gamma)
         df.to_csv(run_dir / f"preds_{sp}.csv", index=False)
         log.info("wrote preds_%s.csv (%d rows)", sp, len(df))
     chk = val_metrics(pd.read_csv(run_dir / "preds_val.csv"))["tss_ge_m"]

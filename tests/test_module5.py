@@ -138,7 +138,7 @@ def test_param_counts_positive_and_ordered():
 
 
 def test_build_model_rejects_unknown_names():
-    for bad in ("E0", "E6", "resnet", "", "E"):
+    for bad in ("E0", "E9", "resnet", "", "E"):
         with pytest.raises(ValueError, match="Unknown model"):
             build_model(bad)
     assert type(build_model("e1")) is StaticCNN  # case-insensitive
