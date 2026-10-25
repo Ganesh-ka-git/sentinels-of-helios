@@ -6,9 +6,24 @@ jsoc:
   segment: "Br"
   query_chunk_days: 7               # split keyword queries into chunks to avoid timeouts
 
+download:
+  workers: 8                        # parallel HTTP download threads (benchmark tests 1, 4 and 8)
+  export_chunk_records: 120         # max records per JSOC export request (Module 3)
+  timeout_s: 60                     # per-request timeout
+  retries: 3                        # retries per file, exponential backoff
+  tar_timeout_s: 120                # url-tar: per-request timeout for the .tar download
+  tar_retries: 3                    # url-tar: retries for the tar download and for the export request
+  tar_workers: 1                    # url-tar: chunks (tars) processed concurrently
+
 paths:
   data_dir: "data"
   outputs_dir: "outputs"
+  samples_csv: "outputs/index/samples_final.csv"   # Module 4: sample index (included rows are used)
+  frames_dir: "data/processed/frames"              # Module 4: per-frame .npy files (read-only)
+
+loader:                             # Module 4 defaults (batch size from decisions.md §9)
+  batch_size: 16
+  num_workers: 4
 
 pilot:
   start: "2024-05-01T00:00:00"      # pilot month (very active month, AR 13664): exercises M/X association
@@ -17,9 +32,23 @@ pilot:
     enabled: true
     n_hours: 4                      # export one HARP's Br frames for this many hours (~20 frames)
 
+period:                             # Module 2 observation period (end exclusive, month starts)
+  start: "2023-01-01T00:00:00"
+  end:   "2025-07-01T00:00:00"      # extended from 2025-02-01 (adds 2025-02 ... 2025-06)
+  priority_years: [2024, 2023]      # process these years first (in this order), then the remaining months
+
+completeness:                       # catalogue-completeness rule (decisions.md §10, Change Log 10)
+  min_share_with_noaa: 0.80         # keep a month only if >= this share of its >=M flares have a NOAA number
+  expected_kept_first: "2024-01"    # sanity check only: the script STOPs if the kept set differs from this range
+  expected_kept_last: "2025-06"
+
+split:
+  pattern: [train, train, train, val, test]   # HARP-grouped month blocks (decisions.md §10)
+
 flares:
   source: "hek"                     # HEK via SunPy
   frm_name: "SWPC"                  # keep a single catalogue source
+  hek_timeout_s: 300                # socket timeout for HEK queries (a stalled query now fails instead of hanging)
   association_window_hours: 1.0     # match NOAA number to HARP records within ±1 h of flare start
 
 samples:

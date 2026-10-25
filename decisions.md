@@ -45,8 +45,7 @@ test-set difference excludes 0, with the direction consistent across seeds if se
    an associated flare, so its negatives would be unverifiable. (New in v2; see Change Log.)
 8. **Limb**: every input frame that exists must have |LON_FWT| ≤ 68°, otherwise the sample is excluded. Limb frames are not
    substituted.
-9. **QUALITY**: frames with QUALITY outside the accepted mask are treated as missing. Default: QUALITY == 0 only. The final rule
-   is PILOT (the pilot reports the value distribution).
+9. **QUALITY**: frames with QUALITY outside the accepted mask are treated as missing. Accepted: QUALITY == 0 only (LOCKED; pilot: 96.2% of records).
 10. **Missing frames**: the frame at t is mandatory. Any other missing or bad frame is replaced by the nearest earlier good record
     inside the input window. More than 3 replacements, or an unfillable gap, means the sample is excluded.
 11. A flow table of counts after each rule is reported.
@@ -87,7 +86,11 @@ Only records on the 24-min grid relative to t are ever needed.
 ## 10. Split (LOCKED)
 - HARP-grouped month blocks in the repeating pattern T, T, T, V, Te.
 - Each HARP is assigned by the month of its first record.
-- Observation period: PILOT.
+- **Observation period (LOCKED): the kept months 2024-01 … 2025-06 (18 months).** Indexed range 2023-01 … 2025-06; a month
+  is kept only if ≥ 80% of its ≥M flares (start inside the calendar month) carry a NOAA number in the catalogue
+  (**catalogue-completeness rule**). Result: all 12 months of 2023 fail (0–25% of ≥M flares have a NOAA number); all 18
+  months from 2024-01 to 2025-06 pass (83.0–100%). The split is built over kept months only: month_index counts from
+  2024-01, and a HARP is assigned to the month of its first record, or to 2024-01 if it was already active then.
 
 ## 11. Evaluation (LOCKED)
 - Primary: TSS≥M.
@@ -124,3 +127,6 @@ Optional only if time remains: E1w.
 | 6 | Interval written as half-open [t+6, t+24) | Consistency | Approved 22 Oct |
 | 7 | Only HARPs with a NOAA number are sampled | Negatives must be verifiable | v2: approved by proceeding with the pilot |
 | 8 | 4-digit → 5-digit NOAA normalisation | Catalogue convention | v2: technical, no design impact |
+| 9 | QUALITY rule (5.9) moved from PILOT to LOCKED: QUALITY == 0 only | Pilot (May 2024): 96.2% of records have QUALITY == 0; rule value unchanged | Approved 22 Oct |
+| 10 | Observation period 2023-01…2025-01 (planned) → kept months 2024-01…2025-06. Catalogue-completeness rule: keep a month only if ≥ 80% of its ≥M flares have a NOAA number. Split rebuilt over kept months only | 2023 SWPC flares mostly lack NOAA numbers (0–25% of ≥M flares have one, vs 83–100% from 2024-01), so unassociated ≥M windows are excluded and almost no M/X positives survive (0–4 per month). Months 2025-02…2025-06 added to restore sample size | Approved 24 Oct |
+| 11 | Storage: one .npy per frame instead of one memmap per HARP (§6 storage line) | Loader timing showed no bottleneck (<=0.05 s/batch, 4 workers) | Approved 25 Oct |

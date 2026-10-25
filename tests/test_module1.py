@@ -204,3 +204,152 @@ def test_no_noaa_excluded():
     sharp = make_sharp(noaa=())
     fl = associate_flares(make_flares([(T + pd.Timedelta(days=5), "C1.0", 13664)]), sharp)
     assert build_samples(sharp, fl, CFG).set_index("t").loc[T, "excluded_reason"] == "no_noaa_region"
+
+
+# ---------------- download benchmark helpers ----------------
+from flarecast.data.jsoc import build_record_sets, download_all, download_file, export_urls, local_filename  # noqa: E402
+
+
+def test_build_record_sets_per_harp():
+    frames = pd.DataFrame({"harpnum": [200, 100, 100, 100],
+                           "time": pd.to_datetime(["2024-05-01 00:24", "2024-05-01 00:24", "2024-05-01 00:00",
+                                                   "2024-05-01 00:24"])})
+    sets = build_record_sets(frames, "hmi.sharp_cea_720s", "Br")
+    assert sets == [
+        "hmi.sharp_cea_720s[100][2024.05.01_00:00:00_TAI,2024.05.01_00:24:00_TAI]{Br}",
+        "hmi.sharp_cea_720s[200][2024.05.01_00:24:00_TAI]{Br}",
+    ]
+    with pytest.raises(ValueError):
+        build_record_sets(frames.iloc[0:0], "s", "Br")
+
+
+class _Resp:
+    def __init__(self, body: bytes, status: int = 200, length: int | None = None, fail_midway: bool = False):
+        self.body, self.status, self.fail_midway = body, status, fail_midway
+        self.headers = {"Content-Length": str(len(body) if length is None else length)}
+
+    def raise_for_status(self):
+        import requests
+        if self.status >= 400:
+            raise requests.HTTPError(f"{self.status}")
+
+    def iter_content(self, chunk_size=1):
+        import requests
+        yield self.body[: len(self.body) // 2]
+        if self.fail_midway:
+            raise requests.ConnectionError("dropped")
+        yield self.body[len(self.body) // 2:]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _Session:
+    """Scripted session: `responses` is a list consumed by successive .get calls (callable or response)."""
+    def __init__(self, responses, head_length=None):
+        self.responses, self.head_length, self.gets, self.heads = list(responses), head_length, 0, 0
+
+    def get(self, url, stream=True, timeout=None):
+        self.gets += 1
+        r = self.responses.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    def head(self, url, timeout=None, allow_redirects=True):
+        self.heads += 1
+        return _Resp(b"", length=self.head_length)
+
+
+def test_download_file_retries_then_succeeds(tmp_path):
+    import requests
+    sleeps = []
+    s = _Session([requests.Timeout("t"), _Resp(b"abcdef", fail_midway=True), _Resp(b"abcdef")])
+    res = download_file("http://x/f.fits", tmp_path / "f.fits", s, timeout_s=60, retries=3, backoff_s=2.0,
+                        sleep=sleeps.append)
+    assert res["status"] == "ok" and res["attempts"] == 3 and res["bytes"] == 6
+    assert sleeps == [2.0, 4.0]  # exponential backoff
+    assert (tmp_path / "f.fits").read_bytes() == b"abcdef"
+    assert not (tmp_path / "f.fits.part").exists()
+
+
+def test_download_file_fails_loudly_after_retries(tmp_path):
+    import requests
+    s = _Session([requests.Timeout("t")] * 3)
+    res = download_file("http://x/f.fits", tmp_path / "f.fits", s, timeout_s=60, retries=2, sleep=lambda _: None)
+    assert res["status"] == "failed" and res["attempts"] == 3 and "Timeout" in res["error"]
+    assert not (tmp_path / "f.fits").exists()
+
+
+def test_download_file_rejects_truncated_body(tmp_path):
+    s = _Session([_Resp(b"abcdef", length=10)])
+    res = download_file("http://x/f.fits", tmp_path / "f.fits", s, timeout_s=60, retries=0, sleep=lambda _: None)
+    assert res["status"] == "failed" and "incomplete" in res["error"]
+    assert not (tmp_path / "f.fits").exists()
+
+
+def test_download_file_skips_existing_with_correct_size(tmp_path):
+    dest = tmp_path / "f.fits"
+    dest.write_bytes(b"abcdef")
+    s = _Session([], head_length=6)
+    res = download_file("http://x/f.fits", dest, s, timeout_s=60, retries=3)
+    assert res["status"] == "skipped" and s.gets == 0
+    # wrong size on disk -> re-download
+    dest.write_bytes(b"abc")
+    s2 = _Session([_Resp(b"abcdef")], head_length=6)
+    res2 = download_file("http://x/f.fits", dest, s2, timeout_s=60, retries=3)
+    assert res2["status"] == "ok" and dest.read_bytes() == b"abcdef"
+
+
+def test_download_all_parallel(tmp_path):
+    items = [(f"f{i}.fits", f"http://x/{i}") for i in range(6)]
+
+    class Factory:
+        def __call__(self):
+            class S:
+                def get(self, url, stream=True, timeout=None):
+                    return _Resp(url.encode())
+
+                def head(self, *a, **k):
+                    raise AssertionError("no HEAD expected for fresh files")
+            return S()
+
+    res = download_all(items, tmp_path, workers=4, timeout_s=60, retries=1, session_factory=Factory())
+    assert [r["status"] for r in res] == ["ok"] * 6
+    assert (tmp_path / "f3.fits").read_bytes() == b"http://x/3"
+
+
+def test_local_filename_unique_per_record():
+    a = local_filename("hmi.sharp_cea_720s[11117][2024.05.01_00:24:00_TAI]", "Br")
+    b = local_filename("hmi.sharp_cea_720s[11117][2024.05.01_00:48:00_TAI]", "Br")
+    assert a == "hmi.sharp_cea_720s.11117.20240501_002400_TAI.Br.fits" and a != b
+    with pytest.raises(ValueError):
+        local_filename("garbage", "Br")
+
+
+class _FakeExportClient:
+    def __init__(self, records):
+        self.records = records
+
+    def export(self, q, method, protocol, email):
+        assert (method, protocol) == ("url_quick", "as-is")
+        recs = self.records
+
+        class Req:
+            urls = pd.DataFrame({"record": recs, "filename": ["Br.fits"] * len(recs),  # as-is: all named Br.fits
+                                 "url": [f"http://x/{i}/Br.fits" for i in range(len(recs))]})
+
+            def wait(self):
+                pass
+        return Req()
+
+
+def test_export_urls_gives_unique_names_despite_as_is_filenames():
+    recs = [f"hmi.sharp_cea_720s[11117][2024.05.01_00:{m:02d}:00_TAI]" for m in (0, 24)]
+    out = export_urls(_FakeExportClient(recs), ["q"], "a@b.c", "Br")
+    assert out["filename"].is_unique and len(out) == 2
+    with pytest.raises(ValueError, match="Duplicate"):
+        export_urls(_FakeExportClient([recs[0], recs[0]]), ["q"], "a@b.c", "Br")
