@@ -13,6 +13,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from flarecast.dataset import (COARSE, FINE, FlareDataset, availability_report, class_weights,  # noqa: E402
                                filter_available, load_samples, make_loaders)
 from flarecast.dataset.flare_dataset import frame_filename  # noqa: E402
+import functools  # noqa: E402
+
+# these tests exercise the per-frame .npy path; the cache is tested in test_cache.py
+FlareDataset = functools.partial(FlareDataset, use_cache=False)  # noqa: F811
+make_loaders = functools.partial(make_loaders, use_cache=False)  # noqa: F811
 
 T0 = pd.Timestamp("2024-03-01 12:00")
 

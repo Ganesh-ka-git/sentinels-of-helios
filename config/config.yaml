@@ -20,10 +20,12 @@ paths:
   outputs_dir: "outputs"
   samples_csv: "outputs/index/samples_final.csv"   # Module 4: sample index (included rows are used)
   frames_dir: "data/processed/frames"              # Module 4: per-frame .npy files (read-only)
+  cache_dir: "data/processed/cache"                # packed float16 frame cache (04b_build_cache.py)
 
 loader:                             # Module 4 defaults (batch size from decisions.md §9)
-  batch_size: 16
-  num_workers: 4
+  batch_size: 8                     # decisions.md §9, Change Log 12 (batch 16 peaks ~3.1 GB for E2/E3)
+  num_workers: 4                    # Module 4b benchmark (E4, cache): epoch 2 = 66 s (0 workers), 61 s (4), 61 s (8); 4 chosen
+  use_cache: true                   # read frames from the packed cache (decisions.md Change Log 14)
 
 pilot:
   start: "2024-05-01T00:00:00"      # pilot month (very active month, AR 13664): exercises M/X association

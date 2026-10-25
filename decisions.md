@@ -78,7 +78,7 @@ Only records on the 24-min grid relative to t are ever needed.
 - **E5**: E4 trained with class-weighted cross-entropy, w_c = N/(K·N_c), computed on the training split only.
 
 ## 9. Training (LOCKED)
-- AdamW (weight decay 1e-4), batch 16, AMP, max 30 epochs, early stopping (patience 5) on validation TSS≥M.
+- AdamW (weight decay 1e-4), batch 8 (all models; Change Log 12), AMP, max 30 epochs, early stopping (patience 5) on validation TSS≥M.
 - Learning rate ∈ {1e-3, 3e-4}, with the same tuning budget for every model.
 - Seeds: 3 if time allows, otherwise 1.
 - Hardware: laptop GPU; AWS EC2 or Kaggle for the remaining seeds.
@@ -101,7 +101,7 @@ Only records on the 24-min grid relative to t are ever needed.
   - `torch.cuda.max_memory_allocated`
   - s/epoch and total training time
   - batch-1 latency (median of 200 runs after 20 warm-up runs)
-- Grad-CAM: about 2 true positives, 2 false negatives and 2 false positives.
+- Grad-CAM: about 2 true positives, 2 false negatives and 2 false positives, computed for **all models E1–E5 on the same test samples** (Change Log 13).
 
 ## 12. Scope exclusions (LOCKED)
 Excluded: 3D CNN, solar-cycle input, focal loss, resampling, multi-wavelength input, other architectures.
@@ -130,3 +130,6 @@ Optional only if time remains: E1w.
 | 9 | QUALITY rule (5.9) moved from PILOT to LOCKED: QUALITY == 0 only | Pilot (May 2024): 96.2% of records have QUALITY == 0; rule value unchanged | Approved 22 Oct |
 | 10 | Observation period 2023-01…2025-01 (planned) → kept months 2024-01…2025-06. Catalogue-completeness rule: keep a month only if ≥ 80% of its ≥M flares have a NOAA number. Split rebuilt over kept months only | 2023 SWPC flares mostly lack NOAA numbers (0–25% of ≥M flares have one, vs 83–100% from 2024-01), so unassociated ≥M windows are excluded and almost no M/X positives survive (0–4 per month). Months 2025-02…2025-06 added to restore sample size | Approved 24 Oct |
 | 11 | Storage: one .npy per frame instead of one memmap per HARP (§6 storage line) | Loader timing showed no bottleneck (<=0.05 s/batch, 4 workers) | Approved 25 Oct |
+| 12 | Training batch size 16 → 8 for all models (E1–E5), same protocol for every model (§9) | Memory test (RTX 3050, 3,304 MB free): batch 16 at 128 px peaks ≈ 3.0–3.1 GB for E2/E3, leaving no headroom; batch 8 ≈ 1.5 GB. Trade-offs not measured: noisier BatchNorm statistics, ~half of batches contain no M/X sample | Approved 25 Oct |
+| 13 | Grad-CAM for all models E1–E5 on the same set of test samples (§11), not only a subset of models | Allows a like-for-like visual comparison of what each architecture attends to (RQ4) | Approved 25 Oct |
+| 14 | Packed float16 frame cache (single memmap) built from the per-frame files for training speed; identical inputs verified by test | Training E4 was data-bound (cold small-file reads ~600 files/s; ~510 s/epoch vs ~70 s GPU compute). The cache (`data/processed/cache/frames_f16.npy` + `frames_index.csv`) is rebuildable; the per-frame `.npy` files remain the source of truth. `tests/test_cache.py` checks cached and non-cached datasets return identical tensors; 1,000 random rows verified equal to the sources | Approved 25 Oct |

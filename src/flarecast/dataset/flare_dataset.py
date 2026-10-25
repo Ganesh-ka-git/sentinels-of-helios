@@ -24,6 +24,8 @@ MODES = ("static", "single", "dual")
 SPLITS = ("train", "val", "test")
 N_CLASSES = 3
 IMG = 128
+CACHE_FILE = "frames_f16.npy"
+CACHE_INDEX = "frames_index.csv"
 
 
 def frame_filename(frame_id: str) -> str:
@@ -31,6 +33,19 @@ def frame_filename(frame_id: str) -> str:
     if len(frame_id) != 13 or frame_id[8] != "T":
         raise ValueError(f"Bad frame id {frame_id!r}; expected YYYYMMDDTHHMM")
     return f"{frame_id[:8]}_{frame_id[9:]}.npy"
+
+
+def default_cache_dir(frames_dir: Path) -> Path:
+    """data/processed/frames -> data/processed/cache (used when no cache_dir is given)."""
+    return Path(frames_dir).parent / "cache"
+
+
+def load_cache_index(cache_dir: Path) -> dict[tuple[int, str], int]:
+    """(harpnum, 'YYYYMMDDTHHMM') -> row of the packed array, from frames_index.csv."""
+    idx = pd.read_csv(Path(cache_dir) / CACHE_INDEX, dtype={"harpnum": int, "time": str, "row": int})
+    if not idx["row"].is_unique or idx.duplicated(["harpnum", "time"]).any():
+        raise ValueError(f"{Path(cache_dir) / CACHE_INDEX}: duplicate rows or keys")
+    return {(h, t): r for h, t, r in zip(idx["harpnum"], idx["time"], idx["row"])}
 
 
 def load_samples(samples_csv: Path) -> pd.DataFrame:
@@ -99,7 +114,8 @@ class FlareDataset(Dataset):
     Tensors are float32 (files are float16). meta = {"harpnum", "t", "persistence_label"}.
     """
 
-    def __init__(self, samples: pd.DataFrame, frames_dir: Path, mode: str):
+    def __init__(self, samples: pd.DataFrame, frames_dir: Path, mode: str, use_cache: bool = True,
+                 cache_dir: Path | None = None):
         if mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
         self.mode, self.frames_dir = mode, Path(frames_dir)
@@ -113,12 +129,42 @@ class FlareDataset(Dataset):
         idx = np.arange(N_FRAMES)
         self._wanted = {"static": idx[-1:], "single": idx,
                         "dual": np.union1d(idx[COARSE], idx[FINE])}[mode]
+        self.use_cache = use_cache
+        self._cache_path = None
+        self._cache_arr = None   # opened lazily (per worker process): a memmap must not be pickled to workers
+        if use_cache:
+            cdir = Path(cache_dir) if cache_dir else default_cache_dir(self.frames_dir)
+            self._cache_path = cdir / CACHE_FILE
+            if not self._cache_path.exists() or not (cdir / CACHE_INDEX).exists():
+                raise FileNotFoundError(f"Frame cache not found in {cdir}: build it with scripts/04b_build_cache.py "
+                                        f"or pass use_cache=False")
+            lookup = load_cache_index(cdir)
+            try:
+                self._rows = np.array([[lookup[(int(h), f)] for f in ids] for h, ids in zip(self.harp, self.ids)],
+                                      dtype=np.int64)
+            except KeyError as e:
+                raise KeyError(f"Frame {e.args[0]} is not in the cache {cdir}; rebuild it with "
+                               f"scripts/04b_build_cache.py") from None
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_cache_arr"] = None
+        return state
 
     def __len__(self) -> int:
         return len(self.label)
 
     def _load(self, i: int) -> dict[int, np.ndarray]:
         out = {}
+        if self.use_cache:
+            if self._cache_arr is None:
+                arr = np.load(self._cache_path, mmap_mode="r")
+                if arr.ndim != 3 or arr.shape[1:] != (IMG, IMG) or arr.dtype != np.float16:
+                    raise ValueError(f"{self._cache_path}: expected [N,{IMG},{IMG}] float16, got {arr.shape} {arr.dtype}")
+                self._cache_arr = arr
+            for k in self._wanted:
+                out[int(k)] = np.array(self._cache_arr[self._rows[i, k]])   # copy out of the memmap
+            return out
         for k in self._wanted:
             p = self.frames_dir / str(self.harp[i]) / frame_filename(self.ids[i][k])
             arr = np.load(p)  # a missing/corrupt file raises: never substitute silently
@@ -145,7 +191,8 @@ class FlareDataset(Dataset):
 
 
 def make_loaders(mode: str, batch_size: int, num_workers: int, *, samples: pd.DataFrame, frames_dir: Path,
-                 seed: int = 0) -> dict[str, DataLoader]:
+                 seed: int = 0, worker_init_fn=None, use_cache: bool = True,
+                 cache_dir: Path | None = None) -> dict[str, DataLoader]:
     """DataLoaders for train/val/test built from ``samples`` (already availability-filtered).
 
     Shuffle only for train; pin_memory when CUDA exists; persistent workers when num_workers > 0. Splits with no
@@ -163,8 +210,8 @@ def make_loaders(mode: str, batch_size: int, num_workers: int, *, samples: pd.Da
             log.warning("Split %r has no available samples; no loader created for it.", sp)
             continue
         gen = torch.Generator().manual_seed(seed) if sp == "train" else None
-        loaders[sp] = DataLoader(FlareDataset(sub, frames_dir, mode), batch_size=batch_size,
+        loaders[sp] = DataLoader(FlareDataset(sub, frames_dir, mode, use_cache, cache_dir), batch_size=batch_size,
                                  shuffle=(sp == "train"), num_workers=num_workers,
                                  pin_memory=torch.cuda.is_available(), persistent_workers=num_workers > 0,
-                                 drop_last=False, generator=gen)
+                                 drop_last=False, generator=gen, worker_init_fn=worker_init_fn)
     return loaders
