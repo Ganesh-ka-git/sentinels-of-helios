@@ -40,7 +40,7 @@ src/flarecast/            importable package
   models/models.py        SharedEncoder, E1-E5, build_model, persistence_predict
   train/runner.py         train_run (AMP, early stopping on val TSS>=M, preds, cost.json)
   evaluate/               metrics.py, bootstrap.py, report.py
-  (later) explain/
+  explain/                gradcam.py (Grad-CAM, cam_to_patch, explain_cases), cases.py (case selection), figures.py
 scripts/                  numbered entry points (01_feasibility.py ... 07_evaluate.py, 04b_build_cache.py, 06b_queue_seeds.py, watch_*.py)
 tests/                    pytest unit tests (run: python -m pytest -q)
 outputs/                  run outputs (reports, CSV/JSON results); gitignored
@@ -69,7 +69,7 @@ data/                     raw/processed data; gitignored
 | 7 | Evaluation (`07_evaluate.py`, `evaluate/`: metrics, cluster bootstrap, tables, figures) | **done**; multi-seed path run on real output (seeds 0–2, E0–E8) |
 | 6c | Focal models E6–E8 (`loss=focal`, gamma 2, alpha = inv. sqrt freq, train only) + queue `06c_queue_focal.py` (stage 1 E6–E8 x 2 lr x seed 0; stage 2 seeds 1, 2 for E1–E8 at the seed-0 lr) | **done: all 24 selected runs (E1–E8 x seeds 0,1,2) DONE; no further training**; `tests/test_posthoc.py` |
 | 7b | Post-hoc evaluation (`evaluate/thresholds.py`, `07_evaluate.py`): argmax + two-stage thresholds tuned on val only (tau2 by HSS_X, Change Log 17) + HSS variant + ROC/PR-AUC, pooled multi-seed bootstrap (E1vsE2…E8vsE1, E7vsE2, E6vsE4, E6vsE5, each vs E0), X-flag table, ROC/PR and threshold figures | **done and committed (435049d); results locked** |
-| 8 | Grad-CAM + figures and tables for the thesis | pending |
+| 8 | Grad-CAM E1–E8 (`08_gradcam.py select / download / figures`, `explain/`): 7 test cases from E8 seed 0 at its tuned tau1 (`outputs/explain/cases.csv`: TP-X, TP-M, 2 FN, 2 FA, TN), full-resolution frames in `data/figure_fits/`, figures + `figure_index.md` in `outputs/figures/gradcam/`, attention plots E4/E5/E6; `tests/test_gradcam.py` (18) | **done, committed (0fc0afd)**; thesis tables/figures assembly and thesis text remain |
 
 Experiment priority if time is short: E1, E2, E3, then E4, E5, then Grad-CAM, then E1w.
 
@@ -96,7 +96,7 @@ Experiment priority if time is short: E1, E2, E3, then E4, E5, then Grad-CAM, th
   batch 16 at 128 px peaks ≈ 3.0–3.1 GB for E2/E3, batch 8 ≈ 1.5 GB. Batch 8 for **all** models is approved and recorded
   (decisions.md §9, Change Log 12; `loader.batch_size: 8`). Do not use a different batch size per model.
 - **Command style**: `conda run -n flare --no-capture-output python scripts/<name>.py` and
-  `conda run -n flare --no-capture-output python -m pytest -q` (174 tests pass).
+  `conda run -n flare --no-capture-output python -m pytest -q` (192 tests pass; `test_train_run_end_to_end_cpu_and_skip` needs the GPU visible).
 - **Training/eval** (Modules 6-7): runs in `outputs/runs/<model>_lr<lr>_s<seed>[_<tag>]/` (history.csv incl. `data_wait_s`, best.pt
   = `{"model": state_dict, epoch, ...}`, preds_<split>.csv, cost.json, run.json, DONE). Tagged runs (`smoke`, `cachetest_w*`) are ignored by
   the default evaluation. `06_run_all.py [--num-workers N]` queues E1-E5 x lr {1e-3, 3e-4} x seed 0 and skips DONE runs (one process
@@ -127,9 +127,13 @@ Experiment priority if time is short: E1, E2, E3, then E4, E5, then Grad-CAM, th
   tuned thresholds (E6 has lower HSS and precision than E5). X is descriptive only (7 test X): under tuned thresholds all 7 are flagged >=M for
   E3–E8 in every seed, but the number of X predictions is unstable across seeds (e.g. E3 137/7/178, E8 18/280/1), and argmax almost never
   predicts X; the tuned per-class/X numbers are not trustworthy. No further training; do not change the selection or thresholds.
-- **Next**: (1) Module 8: Grad-CAM for E1-E5 on the same test samples (about 2 TP, 2 FN, 2 FP, decisions.md §11,
-  Change Log 13; load `best.pt["model"]`) plus one "X predicted as M" case selected from the ARGMAX predictions (not the tuned
-  thresholds; the case list must say so) and attention plots for E4, E5, E6, thesis figures/tables (Grad-CAM uses seed-0 models); (2) thesis text must state the TAI/UTC note (decisions.md §4), the
+- **Grad-CAM (Module 8, done)**: seed-0 selected runs of E1–E8; layer = block-4 ReLU of the shared encoder (16x16, before pooling), frame at t;
+  target log P(>=M); dual models sum the gradients of both encoder calls; CAM mapped back to the original patch (upsample to padded square,
+  crop padding). Cases chosen from E8 seed 0 test predictions at its validation-tuned tau1 = 0.62 (rules in `explain/cases.py`), reused for every
+  model; each model's decision uses its own tuned tau1 (all 8 models decide identically on all 7 cases). Findings to report carefully: some CAMs are
+  empty inside the patch (e.g. 03_FN E8, evidence only in the padding); attention weights of E4/E5/E6 are near uniform (1/16) except more weight on
+  the oldest frames (checked on case 01 only). The earlier "X predicted as M" case was replaced by the X true-positive case (01_TP-X).
+- **Next**: (1) assemble thesis figures/tables from `outputs/results/`, `outputs/figures/` and `outputs/figures/gradcam/`; (2) thesis text must state the TAI/UTC note (decisions.md §4), the
   catalogue-completeness rule, the batch-8 and cache deviations, and that X is descriptive only.
 
 ## Lessons learned / gotchas
