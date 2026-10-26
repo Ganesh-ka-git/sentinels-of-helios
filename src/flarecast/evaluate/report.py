@@ -340,6 +340,24 @@ def eval_long(selected: pd.DataFrame, thr: pd.DataFrame, splits=("val", "test"))
     return pd.DataFrame(rows)
 
 
+def x_flag_table(sel_by_seed: dict[int, pd.DataFrame], thr: pd.DataFrame, split: str = "test") -> pd.DataFrame:
+    """Per (model, seed, variant): true X samples, how many are flagged >=M (predicted class >= 1), how many are predicted X,
+    and the total number of X predictions (all samples). Shows how unstable the X stage is across seeds."""
+    rows = []
+    for s, sel in sel_by_seed.items():
+        for r in sel.itertuples():
+            t = _thr_of(thr, r.model, r.lr, s)
+            d = load_preds(r.run_dir, split)
+            y = d["label"].to_numpy()
+            for v in VARIANTS:
+                pred = predict_variant(d, v, t)
+                is_x = y == 2
+                rows.append({"model": r.model, "seed": s, "variant": v, "n_X_true": int(is_x.sum()),
+                             "X_flagged_ge_m": int((pred[is_x] >= 1).sum()), "X_predicted_X": int((pred[is_x] == 2).sum()),
+                             "n_pred_X": int((pred == 2).sum()), "n_pred_ge_m": int((pred >= 1).sum())})
+    return pd.DataFrame(rows)
+
+
 def eval_seed_summary(long: pd.DataFrame) -> pd.DataFrame:
     """mean and sd (ddof=1) over seeds per (model, variant, split) of every metric in ``long`` (all seeds stacked)."""
     g = long.groupby(["model", "variant", "split"], sort=False)

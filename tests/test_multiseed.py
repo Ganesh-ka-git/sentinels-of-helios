@@ -154,3 +154,23 @@ def test_pooled_ci_uses_same_resample_for_all_seeds():
     harp, y, preds = _bootstrap_inputs([12, 12, 12])
     row = multi_seed_bootstrap(harp, y, preds, [("a", "b")], n_boot=300, seed=1)[0]
     assert row["ci_s0"] == row["ci_s1"] == row["ci_s2"] == f"[{row['ci_lo']:.3f}, {row['ci_hi']:.3f}]"
+
+
+def test_x_flag_table_counts(tmp_path):
+    """3 test X samples: argmax-M for two, argmax-X for one; checks X flagged as >=M and the number of X predictions."""
+    d = tmp_path / run_name("E1", 1e-3, 0)
+    d.mkdir()
+    (d / "run.json").write_text(json.dumps({"model": "E1", "lr": 1e-3, "seed": 0, "tag": None}), encoding="utf-8")
+    probs = [[.1, .8, .1], [.1, .7, .2], [.1, .3, .6], [.9, .05, .05], [.2, .6, .2], [.9, .05, .05]]
+    df = pd.DataFrame(probs, columns=["p0", "p1", "p2"])
+    df["label"] = [2, 2, 2, 0, 1, 0]
+    df["harpnum"], df["t"], df["persistence_label"] = np.arange(6), np.arange(6), 0
+    df.to_csv(d / "preds_test.csv", index=False)
+    sel = pd.DataFrame([{"model": "E1", "lr": 1e-3, "seed": 0, "run_dir": str(d)}])
+    thr = pd.DataFrame([{"model": "E1", "lr": 1e-3, "seed": 0, "tau1": 0.5, "tau2": 0.5, "tau1_hss": 0.5, "tau2_hss": 0.5}])
+    t = R.x_flag_table({0: sel}, thr).set_index("variant")
+    a = t.loc["argmax"]
+    assert (a["n_X_true"], a["X_flagged_ge_m"], a["X_predicted_X"], a["n_pred_X"]) == (3, 3, 1, 1)
+    # tuned: s = .9, .9, .9, .1, .8, .1 -> >=M for 0,1,2,4; X if p2/s >= .5 -> only sample 2 (.667)
+    k = t.loc["tuned_tss"]
+    assert (k["X_flagged_ge_m"], k["X_predicted_X"], k["n_pred_X"], k["n_pred_ge_m"]) == (3, 1, 1, 4)

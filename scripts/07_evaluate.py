@@ -143,7 +143,8 @@ def main() -> int:
     h5_pairs = [p for p in FOCAL_PAIRS[-1:] if p[0] in models and p[1] in models]
     h5 = pd.concat([run_pooled(sel_by_seed, thr, models, v, H5_METRICS, h5_pairs) for v in ("tuned_tss", "argmax")],
                    ignore_index=True) if h5_pairs else pd.DataFrame()
-    tables.update({"thresholds": thr, "table_eval_long": long, "confusion_tuned": c_tuned,
+    t_xflag = R.x_flag_table(sel_by_seed, thr)
+    tables.update({"table_x_flagged": t_xflag, "thresholds": thr, "table_eval_long": long, "confusion_tuned": c_tuned,
                    "bootstrap_tuned": pooled_tuned, "bootstrap_seeds": pooled_argmax, "bootstrap_auc": auc_boot,
                    "bootstrap_h5": h5})
     if len(seeds) > 1:
@@ -202,6 +203,8 @@ def main() -> int:
           R.md_table(pooled_argmax[boot_cols + seed_cols + ["sign_consistent"]]), "",
           f"## H5: E6 vs E5 (HSS≥M, precision≥M, recall≥M), seeds {seeds}",
           R.md_table(h5[boot_cols + seed_cols + ["sign_consistent"]]) if len(h5) else "E5/E6 not both available.", "",
+          "## Test X samples flagged as ≥M and X predictions per seed (X stage stability; X descriptive only)",
+          R.md_table(t_xflag.sort_values(["variant", "model", "seed"])), "",
           "## Chosen thresholds per run", R.md_table(thr.sort_values(["model", "lr", "seed"])), ""]
     (res_dir / "results_summary.md").write_text("\n".join(md), encoding="utf-8")
     print((res_dir / "results_summary.md").read_text(encoding="utf-8"))
