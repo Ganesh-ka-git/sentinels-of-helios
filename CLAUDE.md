@@ -65,10 +65,10 @@ data/                     raw/processed data; gitignored
 | 4b | Packed float16 frame cache (`04b_build_cache.py`, `dataset/cache.py`), Change Log 14 | **done**, 139,176 frames; `tests/test_cache.py` (8) |
 | 5 | Models E1–E5 + E0 persistence + GPU memory test (`05_memory_test.py`) | **done**; `tests/test_module5.py` (15) |
 | 6 | Training runner (`06_train.py`, `06_run_all.py`, `train/runner.py`) | **done**; seed-0 queue finished (10 runs DONE); `tests/test_module6_7.py` |
-| 6b | Seeds 1 and 2 for the lr chosen per model on seed 0 (`06b_queue_seeds.py`) | **code done, not yet run** (no `_s1`/`_s2` runs exist); `tests/test_multiseed.py` (7) |
-| 7 | Evaluation (`07_evaluate.py`, `evaluate/`: metrics, cluster bootstrap, tables, figures) | **done** for seed 0 (results below); `--seeds` multi-seed path written and unit-tested but never run on real runs |
-| 6c | Focal models E6–E8 (`loss=focal`, gamma 2, alpha = inv. sqrt freq, train only) + queue `06c_queue_focal.py` (stage 1 E6–E8 x 2 lr x seed 0; stage 2 seeds 1, 2 for E1–E8 at the seed-0 lr). Smoke run of E6 OK (1 epoch); queue **not started** | code done; `tests/test_posthoc.py` |
-| 7b | Post-hoc evaluation (`evaluate/thresholds.py`, `07_evaluate.py`): argmax + two-stage thresholds tuned on val only + HSS variant + ROC/PR-AUC, pooled multi-seed bootstrap for E1vsE2…E6vsE5, ROC/PR and threshold figures | **done** on seed-0 E1–E5 |
+| 6b | Seeds 1 and 2 for E1–E5 (`06b_queue_seeds.py`) | superseded by 6c (6c covers E1–E8); `tests/test_multiseed.py` (8) |
+| 7 | Evaluation (`07_evaluate.py`, `evaluate/`: metrics, cluster bootstrap, tables, figures) | **done**; multi-seed path run on real output (seeds 0–2, E0–E8) |
+| 6c | Focal models E6–E8 (`loss=focal`, gamma 2, alpha = inv. sqrt freq, train only) + queue `06c_queue_focal.py` (stage 1 E6–E8 x 2 lr x seed 0; stage 2 seeds 1, 2 for E1–E8 at the seed-0 lr) | **done: all 24 selected runs (E1–E8 x seeds 0,1,2) DONE; no further training**; `tests/test_posthoc.py` |
+| 7b | Post-hoc evaluation (`evaluate/thresholds.py`, `07_evaluate.py`): argmax + two-stage thresholds tuned on val only (tau2 by HSS_X, Change Log 17) + HSS variant + ROC/PR-AUC, pooled multi-seed bootstrap (E1vsE2…E8vsE1, E7vsE2, E6vsE4, E6vsE5, each vs E0), X-flag table, ROC/PR and threshold figures | **done and committed (435049d); results locked** |
 | 8 | Grad-CAM + figures and tables for the thesis | pending |
 
 Experiment priority if time is short: E1, E2, E3, then E4, E5, then Grad-CAM, then E1w.
@@ -89,13 +89,14 @@ Experiment priority if time is short: E1, E2, E3, then E4, E5, then Grad-CAM, th
   `make_loaders(mode, batch_size, num_workers, *, samples, frames_dir, seed=0, worker_init_fn=None, use_cache=True, cache_dir=None)` → dict of train/val/test `DataLoader`s.
   `tests/test_module4.py` wraps both with `use_cache=False` (it tests the per-frame path); cache equivalence is in `tests/test_cache.py`.
   `class_weights(samples)` → w_c = N/(K·N_c) from the train split only (E5). Helpers: `load_samples`, `filter_available`.
-- **Models** (`flarecast.models.models`): `build_model("E1"…"E5")` (E5 = E4 architecture; only the loss differs),
+- **Models** (`flarecast.models.models`): `build_model("E1"…"E8")` (E5 = E4 architecture with class-weighted CE; E6/E7/E8 = E4/E2/E1 architecture
+  with focal loss; only the loss differs), `MODE_OF` (single model→input-layout mapping, used by runner and cost tests),
   `persistence_predict(persistence_label)` for E0, `count_params`. Params: E1 249,411; E2 381,507; E3 521,795; E4 538,435.
 - **Training config**: **batch 8, 128 px**. Memory test (`outputs/models/memory_test.json`, RTX 3050 4 GB, 3,304 MB free):
   batch 16 at 128 px peaks ≈ 3.0–3.1 GB for E2/E3, batch 8 ≈ 1.5 GB. Batch 8 for **all** models is approved and recorded
   (decisions.md §9, Change Log 12; `loader.batch_size: 8`). Do not use a different batch size per model.
 - **Command style**: `conda run -n flare --no-capture-output python scripts/<name>.py` and
-  `conda run -n flare --no-capture-output python -m pytest -q` (154 tests pass).
+  `conda run -n flare --no-capture-output python -m pytest -q` (174 tests pass).
 - **Training/eval** (Modules 6-7): runs in `outputs/runs/<model>_lr<lr>_s<seed>[_<tag>]/` (history.csv incl. `data_wait_s`, best.pt
   = `{"model": state_dict, epoch, ...}`, preds_<split>.csv, cost.json, run.json, DONE). Tagged runs (`smoke`, `cachetest_w*`) are ignored by
   the default evaluation. `06_run_all.py [--num-workers N]` queues E1-E5 x lr {1e-3, 3e-4} x seed 0 and skips DONE runs (one process
@@ -115,11 +116,20 @@ Experiment priority if time is short: E1, E2, E3, then E4, E5, then Grad-CAM, th
   Bootstrap (95% CI of test TSS>=M difference): E2-E1 -0.109 [-0.179, -0.001] (reverse, H1 not supported); E3-E2 +0.155 [0.019, 0.287]
   (supported); E4-E3 -0.017 [-0.091, 0.071] and E5-E4 +0.015 [-0.133, 0.189] (not supported); no model differs from E0 (all CIs include 0);
   E5-E4 recall M +0.243 [0.089, 0.411] (supported). Train TSS 0.67-0.77 vs test 0.37-0.53 (overfits quickly; best epochs 3-11).
-  Single seed only: these verdicts are provisional until seeds 1 and 2 are run.
-- **Next**: (1) user runs `06b_queue_seeds.py` (seeds 1, 2 at the chosen lr; `--dry-run` first) then `07_evaluate.py --seeds 0 1 2`; check the
-  multi-seed path on real output (never run yet); (2) Module 8: Grad-CAM for E1-E5 on the same test samples (about 2 TP, 2 FN, 2 FP, decisions.md §11,
+  These single-seed argmax verdicts are superseded by the multi-seed results below.
+- **Final multi-seed results (LOCKED; seeds 0,1,2, E0–E8, lr fixed from seed-0 val argmax TSS>=M: 3e-4 for all except E4 1e-3; produced by
+  `07_evaluate.py --seeds 0 1 2`, commit 435049d, `outputs/results/results_summary.md`)**. Test mean TSS>=M, argmax / tuned (tau1 on val TSS>=M):
+  E0 0.405; E1 0.425/0.533; E2 0.356/0.484; E3 0.436/0.545; E4 0.333/0.558; E5 0.532/0.573; E6 0.536/0.525; E7 0.591/0.566; E8 0.569/0.571.
+  ROC-AUC 0.837–0.868 for E1–E8 vs 0.702 for E0. Pooled verdicts (CI excludes 0 AND same sign in all 3 seeds), tuned TSS>=M: E2-E1 reverse
+  (H1 not supported); E3-E2 supported; E4-E3, E5-E4, E8-E1, E6-E4, E6-E5 not supported; E7-E2 supported; vs E0 supported for E3, E4, E5, E7, E8
+  (not E1, E2, E6). ROC-AUC: all models beat E0, E2<E1 reverse, nothing else differs; PR-AUC: E8-E1 and E7-E2 supported. Argmax (secondary):
+  E2-E1 and E4-E3 reverse; E5-E4, E8-E1, E7-E2, E6-E4 supported; vs E0 only E7, E8. H4 (tuned TSS>=M) supported only for E7 vs E2 (E8 vs E1, E6 vs E4 not; E8 and E7 do gain on PR-AUC and argmax TSS); H5 reverse under
+  tuned thresholds (E6 has lower HSS and precision than E5). X is descriptive only (7 test X): under tuned thresholds all 7 are flagged >=M for
+  E3–E8 in every seed, but the number of X predictions is unstable across seeds (e.g. E3 137/7/178, E8 18/280/1), and argmax almost never
+  predicts X; the tuned per-class/X numbers are not trustworthy. No further training; do not change the selection or thresholds.
+- **Next**: (1) Module 8: Grad-CAM for E1-E5 on the same test samples (about 2 TP, 2 FN, 2 FP, decisions.md §11,
   Change Log 13; load `best.pt["model"]`) plus one "X predicted as M" case selected from the ARGMAX predictions (not the tuned
-  thresholds; the case list must say so) and attention plots for E4, E5, E6, thesis figures/tables; (3) thesis text must state the TAI/UTC note (decisions.md §4), the
+  thresholds; the case list must say so) and attention plots for E4, E5, E6, thesis figures/tables (Grad-CAM uses seed-0 models); (2) thesis text must state the TAI/UTC note (decisions.md §4), the
   catalogue-completeness rule, the batch-8 and cache deviations, and that X is descriptive only.
 
 ## Lessons learned / gotchas
